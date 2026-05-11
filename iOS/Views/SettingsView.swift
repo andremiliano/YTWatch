@@ -16,23 +16,7 @@ struct SettingsView: View {
                     VStack(spacing: 24) {
                         // Account card
                         SettingsSection(title: "Account") {
-                            if client.isAuthenticated, let name = client.userDisplayName {
-                                SettingsRow(
-                                    icon: "person.circle.fill",
-                                    iconColor: .blue,
-                                    label: name,
-                                    value: "Signed In ✓",
-                                    valueColor: Color.ytRed
-                                )
-                            } else {
-                                SettingsRow(
-                                    icon: "person.circle.fill",
-                                    iconColor: .blue,
-                                    label: client.isAuthenticated ? "YouTube Music" : "Not Signed In",
-                                    value: client.isAuthenticated ? "Signed In ✓" : "",
-                                    valueColor: client.isAuthenticated ? Color.ytRed : Color.appFaint
-                                )
-                            }
+                            AccountRow(client: client)
 
                             if client.isAuthenticated {
                                 Divider().background(Color.appBorder).padding(.horizontal, 14)
@@ -191,6 +175,70 @@ private struct SettingsRow: View {
             Text(value)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(valueColor)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 13)
+    }
+}
+
+private struct AccountRow: View {
+    @ObservedObject var client: YTMusicClient
+    @State private var retrying = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "person.circle.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.blue)
+                .frame(width: 28, height: 28)
+                .background(Color.blue.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 3) {
+                if let name = client.userDisplayName, !name.isEmpty {
+                    Text(name)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text("Signed in to YouTube Music")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.appFaint)
+                } else if client.isAuthenticated {
+                    Text("YouTube Music")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.white)
+                    Text("Name not loaded")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.appFaint)
+                } else {
+                    Text("Not signed in")
+                        .font(.system(size: 15))
+                        .foregroundStyle(Color.appFaint)
+                }
+            }
+
+            Spacer()
+
+            if client.isAuthenticated {
+                if retrying {
+                    ProgressView().tint(Color.ytRed).scaleEffect(0.75)
+                } else if client.userDisplayName == nil {
+                    Button {
+                        retrying = true
+                        Task {
+                            await client.fetchUserProfile()
+                            retrying = false
+                        }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Color.appFaint)
+                    }
+                } else {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(Color.ytRed)
+                        .font(.system(size: 16))
+                }
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 13)

@@ -4,7 +4,15 @@ struct LibraryView: View {
     @ObservedObject private var store = LibraryStore.shared
     @ObservedObject private var downloader = AudioDownloader.shared
     @ObservedObject private var sync = WatchSyncManager.shared
+    @ObservedObject private var client = YTMusicClient.shared
     @State private var appeared = false
+
+    private var libraryTitle: String {
+        if let name = client.userDisplayName, !name.isEmpty {
+            return "\(name)'s Library"
+        }
+        return "Library"
+    }
 
     var body: some View {
         NavigationStack {
@@ -37,7 +45,7 @@ struct LibraryView: View {
                     .refreshable { await store.refresh() }
                 }
             }
-            .navigationTitle("Library")
+            .navigationTitle(libraryTitle)
             .navigationBarTitleDisplayMode(.large)
             .toolbarBackground(Color.appBg, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)

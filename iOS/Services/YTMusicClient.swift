@@ -44,7 +44,7 @@ final class YTMusicClient: NSObject, ObservableObject {
         await fetchUserProfile()
     }
 
-    // Fetches visitorData from the YTM home page — required in all API requests.
+    // Fetches visitorData (and tries to extract account name) from the YTM home page.
     private func fetchVisitorData() async {
         var req = URLRequest(url: URL(string: "https://music.youtube.com/")!)
         req.setValue(cookieHeader(), forHTTPHeaderField: "Cookie")
@@ -53,19 +53,49 @@ final class YTMusicClient: NSObject, ObservableObject {
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
               (resp as? HTTPURLResponse)?.statusCode == 200,
               let html = String(data: data, encoding: .utf8) else {
-            print("[YTM] fetchVisitorData: failed to load home page")
+            print("[YTM] home page fetch failed")
             return
         }
 
-        // Extract VISITOR_DATA from ytcfg embedded in the page
-        if let regex = try? NSRegularExpression(pattern: #""VISITOR_DATA"\s*:\s*"([^"]+)""#),
-           let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
-           let range = Range(match.range(at: 1), in: html) {
-            visitorData = String(html[range])
-            print("[YTM] visitorData ok: \(visitorData.prefix(16))…")
-        } else {
-            print("[YTM] visitorData: not found in page HTML")
+        extractVisitorData(from: html)
+        extractAccountNameFromHTML(html)
+    }
+
+    private func extractVisitorData(from html: String) {
+        let patterns = [#""VISITOR_DATA"\s*:\s*"([^"]+)""#, #"visitorData"\s*:\s*"([^"]+)""#]
+        for p in patterns {
+            if let regex = try? NSRegularExpression(pattern: p),
+               let m = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+               let r = Range(m.range(at: 1), in: html) {
+                visitorData = String(html[r])
+                print("[YTM] visitorData: \(visitorData.prefix(16))…")
+                return
+            }
         }
+        print("[YTM] visitorData not found")
+    }
+
+    private func extractAccountNameFromHTML(_ html: String) {
+        // Patterns that appear in ytInitialData / ytInitialGuideData embedded in the page
+        let patterns = [
+            #""accountName"\s*:\s*\{"runs"\s*:\s*\[\{"text"\s*:\s*"([^"]+)""#,
+            #""activeAccountName"\s*:\s*\{"runs"\s*:\s*\[\{"text"\s*:\s*"([^"]+)""#,
+            #""channelTitle"\s*:\s*"([^"@][^"]{1,50})""#
+        ]
+        for p in patterns {
+            if let regex = try? NSRegularExpression(pattern: p),
+               let m = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+               let r = Range(m.range(at: 1), in: html) {
+                let name = String(html[r])
+                print("[YTM] account name from HTML: \(name)")
+                if userDisplayName == nil {
+                    userDisplayName = name
+                    UserDefaults.standard.set(name, forKey: "ytm_display_name")
+                }
+                return
+            }
+        }
+        print("[YTM] account name not found in HTML — will retry via API")
     }
 
     func logout() {
@@ -84,14 +114,10 @@ final class YTMusicClient: NSObject, ObservableObject {
     }
 
     private func fetchAccountName() async -> String? {
-        // Try account_menu first (most reliable for display name)
-        if let data = try? await ytmRequest(endpoint: "account/account_menu", body: [:]),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            if let name = extractAccountName(from: json) { return name }
-        }
-        // Fallback: account/get_setting
-        if let data = try? await ytmRequest(endpoint: "account/get_setting", body: [:]),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        for endpoint in ["account/account_menu", "account/get_setting"] {
+            guard let data = try? await ytmRequest(endpoint: endpoint, body: [:]) else { continue }
+            print("[YTM] \(endpoint) response: \(String(data: data, encoding: .utf8)?.prefix(500) ?? "")")
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
             if let name = extractAccountName(from: json) { return name }
         }
         return nil
