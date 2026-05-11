@@ -48,6 +48,11 @@ struct ContentView: View {
                     Label("For You", systemImage: "wand.and.stars")
                 }
 
+            SearchView()
+                .tabItem {
+                    Label("Search", systemImage: "magnifyingglass")
+                }
+
             SettingsView()
                 .tabItem {
                     Label("Settings", systemImage: "gear")

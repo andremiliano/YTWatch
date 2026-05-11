@@ -162,6 +162,54 @@ final class YTMusicClient: NSObject, ObservableObject {
 
     // MARK: - API
 
+    struct SearchResults {
+        var songs: [Track] = []
+        var albums: [Playlist] = []
+    }
+
+    func search(query: String) async throws -> SearchResults {
+        let data = try await ytmRequest(endpoint: "search", body: ["query": query])
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return SearchResults()
+        }
+
+        var songs: [Track] = []
+        var albums: [Playlist] = []
+        var seenSongs = Set<String>()
+        var seenAlbums = Set<String>()
+
+        // Walk tree collecting shelves by title
+        func walkShelves(_ obj: Any) {
+            guard let dict = obj as? [String: Any] else {
+                if let arr = obj as? [Any] { arr.forEach(walkShelves) }
+                return
+            }
+            if let shelf = dict["musicShelfRenderer"] as? [String: Any] {
+                let shelfTitle = ((shelf["title"] as? [String: Any])?["runs"] as? [[String: Any]])?
+                    .first?["text"] as? String ?? ""
+                let contents = shelf["contents"] as? [Any] ?? []
+
+                if shelfTitle.lowercased().contains("album") || shelfTitle.lowercased().contains("single") {
+                    for item in contents {
+                        if let r = (item as? [String: Any])?["musicTwoRowItemRenderer"] as? [String: Any],
+                           let p = parsePlaylistRenderer(r),
+                           seenAlbums.insert(p.id).inserted { albums.append(p) }
+                    }
+                } else {
+                    for item in contents {
+                        if let r = (item as? [String: Any])?["musicResponsiveListItemRenderer"] as? [String: Any],
+                           let t = parseTrackRenderer(r),
+                           seenSongs.insert(t.id).inserted { songs.append(t) }
+                    }
+                }
+            }
+            for v in dict.values { walkShelves(v) }
+        }
+        walkShelves(json)
+
+        return SearchResults(songs: songs, albums: albums)
+    }
+
     func fetchHomeFeed() async throws -> [Playlist] {
         let data = try await ytmRequest(endpoint: "browse", body: ["browseId": "FEmusic_home"])
         return try parsePlaylistsFromBrowse(data)

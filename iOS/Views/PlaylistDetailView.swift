@@ -253,34 +253,21 @@ struct TrackRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            // Status column
+            // Sync status indicator
             ZStack {
                 if isTransferring {
-                    ProgressView().tint(Color.appFaint).scaleEffect(0.7)
+                    ProgressView().tint(Color.appFaint).scaleEffect(0.65)
                 } else if isSynced {
                     Image(systemName: "applewatch")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(Color.ytRed)
-                } else if isDownloaded {
-                    Image(systemName: "arrow.down.circle.fill")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Color.appDim.opacity(0.6))
-                } else if let p = progress {
-                    ZStack {
-                        Circle().stroke(Color.appGhost, lineWidth: 1.5)
-                        Circle()
-                            .trim(from: 0, to: p)
-                            .stroke(Color.ytRed, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-                            .rotationEffect(.degrees(-90))
-                    }
-                    .frame(width: 14, height: 14)
                 } else {
                     Circle()
-                        .fill(Color.appGhost)
+                        .fill(isDownloaded ? Color.ytRed.opacity(0.4) : Color.appGhost)
                         .frame(width: 5, height: 5)
                 }
             }
-            .frame(width: 20)
+            .frame(width: 16)
 
             // Track info
             VStack(alignment: .leading, spacing: 3) {
@@ -299,6 +286,9 @@ struct TrackRow: View {
             Text(track.durationFormatted)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(Color.appGhost)
+
+            // Per-track download button
+            TrackDownloadButton(track: track)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
@@ -316,5 +306,46 @@ struct TrackRow: View {
                 }
             }
         }
+    }
+}
+
+struct TrackDownloadButton: View {
+    let track: Track
+    @ObservedObject private var downloader = AudioDownloader.shared
+
+    private var progress: Double? { downloader.downloadProgress[track.videoId] }
+    private var isDownloaded: Bool { downloader.isDownloaded(track.videoId) }
+
+    var body: some View {
+        Button {
+            if isDownloaded {
+                downloader.deleteDownload(videoId: track.videoId)
+            } else {
+                Task { _ = try? await AudioDownloader.shared.download(track: track) }
+            }
+        } label: {
+            ZStack {
+                if let p = progress {
+                    ZStack {
+                        Circle().stroke(Color.appGhost, lineWidth: 1.5)
+                        Circle()
+                            .trim(from: 0, to: p)
+                            .stroke(Color.ytRed, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                    }
+                    .frame(width: 22, height: 22)
+                } else if isDownloaded {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 22))
+                        .foregroundStyle(Color.ytRed.opacity(0.7))
+                } else {
+                    Image(systemName: "arrow.down.circle")
+                        .font(.system(size: 22))
+                        .foregroundStyle(Color.appDim)
+                }
+            }
+            .frame(width: 28, height: 28)
+        }
+        .buttonStyle(.plain)
     }
 }
