@@ -14,6 +14,7 @@ final class YTMusicClient: NSObject, ObservableObject {
     @Published var authError: String?
 
     private var authCookies: [HTTPCookie] = []
+    private var visitorData: String = ""
 
     // MARK: - Auth
 
@@ -23,6 +24,9 @@ final class YTMusicClient: NSObject, ObservableObject {
         authCookies = decoded.compactMap { $0.cookie }
         isAuthenticated = !authCookies.isEmpty
         userDisplayName = UserDefaults.standard.string(forKey: "ytm_display_name")
+        if isAuthenticated {
+            Task { await refreshSessionData() }
+        }
     }
 
     func saveCookies(_ cookies: [HTTPCookie]) {
@@ -32,8 +36,36 @@ final class YTMusicClient: NSObject, ObservableObject {
             KeychainHelper.save(data, key: "ytm_cookies")
         }
         isAuthenticated = true
-        // Fetch profile in the background after saving
-        Task { await fetchUserProfile() }
+        Task { await refreshSessionData() }
+    }
+
+    private func refreshSessionData() async {
+        await fetchVisitorData()
+        await fetchUserProfile()
+    }
+
+    // Fetches visitorData from the YTM home page — required in all API requests.
+    private func fetchVisitorData() async {
+        var req = URLRequest(url: URL(string: "https://music.youtube.com/")!)
+        req.setValue(cookieHeader(), forHTTPHeaderField: "Cookie")
+        req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let html = String(data: data, encoding: .utf8) else {
+            print("[YTM] fetchVisitorData: failed to load home page")
+            return
+        }
+
+        // Extract VISITOR_DATA from ytcfg embedded in the page
+        if let regex = try? NSRegularExpression(pattern: #""VISITOR_DATA"\s*:\s*"([^"]+)""#),
+           let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+           let range = Range(match.range(at: 1), in: html) {
+            visitorData = String(html[range])
+            print("[YTM] visitorData ok: \(visitorData.prefix(16))…")
+        } else {
+            print("[YTM] visitorData: not found in page HTML")
+        }
     }
 
     func logout() {
@@ -137,8 +169,8 @@ final class YTMusicClient: NSObject, ObservableObject {
         request.setValue("https://music.youtube.com", forHTTPHeaderField: "X-Origin")
 
         // Cookie header
-        let cookieHeader = authCookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
-        request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+        request.setValue(cookieHeader(), forHTTPHeaderField: "Cookie")
+        print("[YTM] cookies: \(authCookies.map(\.name).joined(separator: ", "))")
 
         // SAPISIDHASH — required by YouTube Music API.
         // Newer Google accounts may only have __Secure-3PAPISID, not SAPISID.
@@ -172,22 +204,29 @@ final class YTMusicClient: NSObject, ObservableObject {
         return "SAPISIDHASH \(timestamp)_\(hex)"
     }
 
+    private func cookieHeader() -> String {
+        authCookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+    }
+
     private func ytmContext() -> [String: Any] {
-        // clientVersion must reflect today's GMT date — YouTube rejects stale versions
         let datePart = {
             let f = DateFormatter()
             f.dateFormat = "yyyyMMdd"
             f.timeZone = TimeZone(identifier: "UTC")
             return f.string(from: Date())
         }()
+        var client: [String: Any] = [
+            "clientName": "WEB_REMIX",
+            "clientVersion": "1.\(datePart).01.00",
+            "hl": "en",
+            "gl": "US",
+            "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36,gzip(gfe)"
+        ]
+        if !visitorData.isEmpty { client["visitorData"] = visitorData }
         return [
-            "client": [
-                "clientName": "WEB_REMIX",
-                "clientVersion": "1.\(datePart).01.00",
-                "hl": "en",
-                "gl": "US"
-            ],
-            "user": [String: Any]()
+            "client": client,
+            "user": ["lockedSafetyMode": false],
+            "request": ["useSsl": true, "internalExperimentFlags": [Any]()]
         ]
     }
 
