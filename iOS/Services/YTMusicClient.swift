@@ -128,25 +128,20 @@ final class YTMusicClient: NSObject, ObservableObject {
     }
 
     private func parsePlaylistRenderer(_ r: [String: Any]) -> Playlist? {
-        // title
         guard let titleObj = r["title"] as? [String: Any],
               let runs = titleObj["runs"] as? [[String: Any]],
               let title = runs.first?["text"] as? String else { return nil }
 
-        // navigation endpoint for ID
         guard let nav = r["navigationEndpoint"] as? [String: Any],
               let browse = nav["browseEndpoint"] as? [String: Any],
               let browseId = browse["browseId"] as? String else { return nil }
 
-        // thumbnail
-        let thumb = ((r["thumbnailRenderer"] as? [String: Any])?
-            ["musicThumbnailRenderer"] as? [String: Any])?
-            ["thumbnail"] as? [String: Any]
-        let thumbnails = thumb?["thumbnails"] as? [[String: Any]]
+        let thumbRenderer = (r["thumbnailRenderer"] as? [String: Any])?["musicThumbnailRenderer"] as? [String: Any]
+        let thumbObj = thumbRenderer?["thumbnail"] as? [String: Any]
+        let thumbnails = thumbObj?["thumbnails"] as? [[String: Any]]
         let thumbnailURL = thumbnails?.last?["url"] as? String
 
         let playlistId = browseId.hasPrefix("VL") ? String(browseId.dropFirst(2)) : browseId
-
         return Playlist(id: playlistId, title: title, thumbnailURL: thumbnailURL, tracks: [])
     }
 
@@ -174,20 +169,19 @@ final class YTMusicClient: NSObject, ObservableObject {
     }
 
     private func parseTrackRenderer(_ r: [String: Any]) -> Track? {
-        // columns
         guard let columns = r["flexColumns"] as? [[String: Any]] else { return nil }
 
         func text(column: Int) -> String? {
-            (((columns[safe: column]?["musicResponsiveListItemFlexColumnRenderer"] as? [String: Any])?
-                ["text"] as? [String: Any])?
-                ["runs"] as? [[String: Any]])?.first?["text"] as? String
+            let col = columns[safe: column]?["musicResponsiveListItemFlexColumnRenderer"] as? [String: Any]
+            let textObj = col?["text"] as? [String: Any]
+            let runs = textObj?["runs"] as? [[String: Any]]
+            return runs?.first?["text"] as? String
         }
 
         guard let title = text(column: 0) else { return nil }
         let artist = text(column: 1) ?? "Unknown"
         let album = text(column: 2)
 
-        // videoId from overlay or endpoint
         let videoId: String?
         if let overlay = r["overlay"] as? [String: Any],
            let playButton = overlay["musicItemThumbnailOverlayRenderer"] as? [String: Any],
@@ -202,20 +196,19 @@ final class YTMusicClient: NSObject, ObservableObject {
 
         guard let vid = videoId else { return nil }
 
-        // duration from fixedColumns
         var durationSeconds = 0
-        if let fixed = r["fixedColumns"] as? [[String: Any]],
-           let durText = (((fixed.first?["musicResponsiveListItemFixedColumnRenderer"] as? [String: Any])?
-               ["text"] as? [String: Any])?
-               ["runs"] as? [[String: Any]])?.first?["text"] as? String {
-            durationSeconds = parseDuration(durText)
+        if let fixed = r["fixedColumns"] as? [[String: Any]] {
+            let fixedCol = fixed.first?["musicResponsiveListItemFixedColumnRenderer"] as? [String: Any]
+            let fixedText = fixedCol?["text"] as? [String: Any]
+            let fixedRuns = fixedText?["runs"] as? [[String: Any]]
+            if let durText = fixedRuns?.first?["text"] as? String {
+                durationSeconds = parseDuration(durText)
+            }
         }
 
-        // thumbnail
-        let thumbURL = ((r["thumbnail"] as? [String: Any])?
-            ["musicThumbnailRenderer"] as? [String: Any])?
-            ["thumbnail"] as? [String: Any]
-        let thumbnails = thumbURL?["thumbnails"] as? [[String: Any]]
+        let thumbRenderer = (r["thumbnail"] as? [String: Any])?["musicThumbnailRenderer"] as? [String: Any]
+        let thumbObj = thumbRenderer?["thumbnail"] as? [String: Any]
+        let thumbnails = thumbObj?["thumbnails"] as? [[String: Any]]
         let thumbnailURL = thumbnails?.last?["url"] as? String
 
         return Track(

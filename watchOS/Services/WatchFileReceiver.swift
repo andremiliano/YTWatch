@@ -108,19 +108,21 @@ extension WatchFileReceiver: WCSessionDelegate {
 
     // Receive audio file
     nonisolated func session(_ session: WCSession, didReceive file: WCSessionFile) {
+        // Extract Sendable values before crossing actor boundary
+        let fileURL = file.fileURL
+        let metaData: Data? = file.metadata.flatMap { try? JSONSerialization.data(withJSONObject: $0) }
+
         Task { @MainActor in
             self.receivingCount += 1
             defer { self.receivingCount = max(0, self.receivingCount - 1) }
 
-            guard let meta = file.metadata,
-                  let metaData = try? JSONSerialization.data(withJSONObject: meta),
+            guard let metaData,
                   let transfer = try? JSONDecoder().decode(TrackTransferMetadata.self, from: metaData) else { return }
 
             let destURL = Self.audioDirectory.appendingPathComponent("\(transfer.track.videoId).m4a")
             try? self.fm.removeItem(at: destURL)
-            try? self.fm.copyItem(at: file.fileURL, to: destURL)
+            try? self.fm.copyItem(at: fileURL, to: destURL)
 
-            // Update playlist metadata
             if var playlist = self.playlists.first(where: { $0.id == transfer.playlistId }) {
                 if !playlist.tracks.contains(where: { $0.videoId == transfer.track.videoId }) {
                     playlist.tracks.append(transfer.track)
@@ -128,7 +130,6 @@ extension WatchFileReceiver: WCSessionDelegate {
                 }
                 self.upsertPlaylist(playlist)
             } else {
-                // New playlist — create it
                 let newPlaylist = Playlist(
                     id: transfer.playlistId,
                     title: transfer.playlistTitle,
@@ -142,11 +143,15 @@ extension WatchFileReceiver: WCSessionDelegate {
 
     // Receive playlist metadata context update
     nonisolated func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
+        // Extract Sendable values before crossing actor boundary
+        let typeStr = applicationContext[WatchMessageKey.type.rawValue] as? String
+        let b64 = applicationContext[WatchMessageKey.payload.rawValue] as? String
+
         Task { @MainActor in
-            guard let typeStr = applicationContext[WatchMessageKey.type.rawValue] as? String,
+            guard let typeStr,
                   let type = WatchMessageType(rawValue: typeStr),
                   type == .playlistIndex,
-                  let b64 = applicationContext[WatchMessageKey.payload.rawValue] as? String,
+                  let b64,
                   let data = Data(base64Encoded: b64),
                   let playlist = try? JSONDecoder().decode(Playlist.self, from: data) else { return }
 

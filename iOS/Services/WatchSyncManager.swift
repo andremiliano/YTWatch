@@ -111,24 +111,24 @@ final class WatchSyncManager: NSObject, ObservableObject {
 extension WatchSyncManager: WCSessionDelegate {
 
     nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
-        Task { @MainActor in
-            self.isWatchReachable = session.isReachable
-        }
+        let reachable = session.isReachable
+        Task { @MainActor in self.isWatchReachable = reachable }
     }
 
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
-        Task { @MainActor in
-            self.isWatchReachable = session.isReachable
-        }
+        let reachable = session.isReachable
+        Task { @MainActor in self.isWatchReachable = reachable }
     }
 
     nonisolated func session(_ session: WCSession, didFinish fileTransfer: WCSessionFileTransfer, error: Error?) {
+        // Use ObjectIdentifier (Sendable) to match the transfer on the main actor
+        let transferId = ObjectIdentifier(fileTransfer)
+        let succeeded = error == nil
         Task { @MainActor in
-            // Find the videoId for this transfer
-            if let videoId = self.pendingTransfers.first(where: { $0.value === fileTransfer })?.key {
+            if let videoId = self.pendingTransfers.first(where: { ObjectIdentifier($0.value) == transferId })?.key {
                 self.pendingTransfers.removeValue(forKey: videoId)
                 self.transferringTrackIds.remove(videoId)
-                if error == nil {
+                if succeeded {
                     self.syncedTrackIds.insert(videoId)
                     self.saveSyncState()
                 }
