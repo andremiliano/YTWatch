@@ -194,16 +194,22 @@ final class YTMusicClient: NSObject, ObservableObject {
         request.setValue("0", forHTTPHeaderField: "X-Goog-AuthUser")
         request.setValue("https://music.youtube.com", forHTTPHeaderField: "X-Origin")
 
-        // Cookie header
-        request.setValue(cookieHeader(), forHTTPHeaderField: "Cookie")
-        print("[YTM] cookies: \(authCookies.map(\.name).joined(separator: ", "))")
+        // Only send .youtube.com cookies — a real browser never mixes .google.com
+        // cookies into requests to music.youtube.com. Sending both causes yt_li=0.
+        let ytCookies = authCookies.filter { $0.domain.hasSuffix(".youtube.com") || $0.domain == "youtube.com" }
+        let cookieStr = ytCookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+        request.setValue(cookieStr, forHTTPHeaderField: "Cookie")
+        print("[YTM] yt cookies: \(ytCookies.map(\.name).joined(separator: ", "))")
 
-        // SAPISIDHASH — required by YouTube Music API.
-        // Newer Google accounts may only have __Secure-3PAPISID, not SAPISID.
-        let sapisid = authCookies.first(where: { $0.name == "SAPISID" })?.value
-                   ?? authCookies.first(where: { $0.name == "__Secure-3PAPISID" })?.value
+        // SAPISIDHASH — use the .youtube.com SAPISID so it matches the Cookie header
+        let sapisid = ytCookies.first(where: { $0.name == "SAPISID" })?.value
+                   ?? ytCookies.first(where: { $0.name == "__Secure-3PAPISID" })?.value
+                   ?? authCookies.first(where: { $0.name == "SAPISID" })?.value
         if let sapisid {
             request.setValue(generateSAPISIDHASH(sapisid: sapisid), forHTTPHeaderField: "Authorization")
+            print("[YTM] SAPISIDHASH using: \(sapisid.prefix(8))…")
+        } else {
+            print("[YTM] WARNING: no SAPISID found — auth will fail")
         }
 
         // Wrap body in standard YouTube Music context
@@ -213,6 +219,15 @@ final class YTMusicClient: NSObject, ObservableObject {
         request.httpBody = try JSONSerialization.data(withJSONObject: fullBody)
 
         let (data, response) = try await URLSession.shared.data(for: request)
+
+        // Opportunistically grab visitorData from every response
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let ctx = json["responseContext"] as? [String: Any],
+           let vd = ctx["visitorData"] as? String, !vd.isEmpty, visitorData.isEmpty {
+            visitorData = vd
+            print("[YTM] visitorData from response: \(vd.prefix(16))…")
+        }
+
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
             let body = String(data: data, encoding: .utf8) ?? ""
@@ -231,7 +246,10 @@ final class YTMusicClient: NSObject, ObservableObject {
     }
 
     private func cookieHeader() -> String {
-        authCookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+        authCookies
+            .filter { $0.domain.hasSuffix(".youtube.com") || $0.domain == "youtube.com" }
+            .map { "\($0.name)=\($0.value)" }
+            .joined(separator: "; ")
     }
 
     private func ytmContext() -> [String: Any] {
