@@ -168,7 +168,7 @@ final class YTMusicClient: NSObject, ObservableObject {
     }
 
     func fetchLikedSongs() async throws -> [Track] {
-        let data = try await ytmRequest(endpoint: "browse", body: ["browseId": "VLSE"])
+        let data = try await ytmRequest(endpoint: "browse", body: ["browseId": "VLLM"])
         return try parseTracksFromPlaylist(data)
     }
 

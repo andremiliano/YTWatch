@@ -5,15 +5,17 @@ struct PlaylistDetailView: View {
 
     @ObservedObject private var downloader = AudioDownloader.shared
     @ObservedObject private var sync = WatchSyncManager.shared
+    @State private var tracks: [Track] = []
+    @State private var isLoadingTracks = false
     @State private var isDownloadingAll = false
     @State private var isSyncing = false
     @State private var appeared = false
 
     private var downloadedCount: Int {
-        playlist.tracks.filter { downloader.isDownloaded($0.videoId) }.count
+        tracks.filter { downloader.isDownloaded($0.videoId) }.count
     }
-    private var allDownloaded: Bool { downloadedCount == playlist.tracks.count && !playlist.tracks.isEmpty }
-    private var allSynced: Bool { playlist.tracks.allSatisfy { sync.syncedTrackIds.contains($0.videoId) } }
+    private var allDownloaded: Bool { downloadedCount == tracks.count && !tracks.isEmpty }
+    private var allSynced: Bool { tracks.allSatisfy { sync.syncedTrackIds.contains($0.videoId) } }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -21,48 +23,64 @@ struct PlaylistDetailView: View {
 
             ScrollView {
                 VStack(spacing: 0) {
-                    // Hero header
-                    PlaylistHeroHeader(playlist: playlist, downloadedCount: downloadedCount)
-                        .opacity(appeared ? 1 : 0)
-                        .offset(y: appeared ? 0 : -8)
+                    PlaylistHeroHeader(
+                        playlist: playlist,
+                        trackCount: tracks.count,
+                        downloadedCount: downloadedCount
+                    )
+                    .opacity(appeared ? 1 : 0)
+                    .offset(y: appeared ? 0 : -8)
 
-                    // Track list
-                    VStack(spacing: 1) {
-                        ForEach(Array(playlist.tracks.enumerated()), id: \.element.id) { i, track in
-                            TrackRow(track: track)
-                                .opacity(appeared ? 1 : 0)
-                                .offset(y: appeared ? 0 : 8)
-                                .animation(
-                                    .spring(response: 0.45, dampingFraction: 0.82)
-                                    .delay(0.1 + Double(i) * 0.025),
-                                    value: appeared
-                                )
+                    if isLoadingTracks {
+                        ProgressView()
+                            .tint(Color.ytRed)
+                            .padding(.top, 48)
+                    } else {
+                        VStack(spacing: 1) {
+                            ForEach(Array(tracks.enumerated()), id: \.element.id) { i, track in
+                                TrackRow(track: track)
+                                    .opacity(appeared ? 1 : 0)
+                                    .offset(y: appeared ? 0 : 8)
+                                    .animation(
+                                        .spring(response: 0.45, dampingFraction: 0.82)
+                                            .delay(0.1 + Double(i) * 0.025),
+                                        value: appeared
+                                    )
+                            }
                         }
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 120)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 120)
                 }
             }
 
-            // Floating action bar
-            FloatingActionBar(
-                playlist: playlist,
-                allDownloaded: allDownloaded,
-                allSynced: allSynced,
-                isDownloadingAll: isDownloadingAll,
-                isSyncing: isSyncing,
-                downloadedCount: downloadedCount,
-                onDownload: downloadAll,
-                onSync: syncToWatch
-            )
-            .opacity(appeared ? 1 : 0)
+            if !isLoadingTracks {
+                FloatingActionBar(
+                    trackCount: tracks.count,
+                    allDownloaded: allDownloaded,
+                    allSynced: allSynced,
+                    isDownloadingAll: isDownloadingAll,
+                    isSyncing: isSyncing,
+                    downloadedCount: downloadedCount,
+                    onDownload: downloadAll,
+                    onSync: syncToWatch
+                )
+                .opacity(appeared ? 1 : 0)
+            }
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Color.appBg, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
         .onAppear {
-            withAnimation(.spring(response: 0.5, dampingFraction: 0.82)) {
-                appeared = true
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.82)) { appeared = true }
+        }
+        .task {
+            if !playlist.tracks.isEmpty {
+                tracks = playlist.tracks
+            } else {
+                isLoadingTracks = true
+                tracks = (try? await YTMusicClient.shared.fetchPlaylistTracks(playlistId: playlist.id)) ?? []
+                isLoadingTracks = false
             }
         }
     }
@@ -71,7 +89,7 @@ struct PlaylistDetailView: View {
         isDownloadingAll = true
         Task {
             await withTaskGroup(of: Void.self) { group in
-                for track in playlist.tracks {
+                for track in tracks {
                     guard !downloader.isDownloaded(track.videoId) else { continue }
                     group.addTask { _ = try? await AudioDownloader.shared.download(track: track) }
                 }
@@ -84,7 +102,9 @@ struct PlaylistDetailView: View {
         guard sync.isAvailable else { return }
         isSyncing = true
         Task {
-            await sync.syncPlaylist(playlist)
+            var p = playlist
+            p.tracks = tracks
+            await sync.syncPlaylist(p)
             isSyncing = false
         }
     }
@@ -94,6 +114,7 @@ struct PlaylistDetailView: View {
 
 private struct PlaylistHeroHeader: View {
     let playlist: Playlist
+    let trackCount: Int
     let downloadedCount: Int
 
     var body: some View {
@@ -109,7 +130,9 @@ private struct PlaylistHeroHeader: View {
                     .lineLimit(2)
 
                 HStack(spacing: 12) {
-                    Label("\(playlist.trackCount) tracks", systemImage: "music.note")
+                    if trackCount > 0 {
+                        Label("\(trackCount) tracks", systemImage: "music.note")
+                    }
                     if downloadedCount > 0 {
                         Text("·")
                         Label("\(downloadedCount) downloaded", systemImage: "arrow.down.circle.fill")
@@ -129,7 +152,7 @@ private struct PlaylistHeroHeader: View {
 // MARK: - Floating Action Bar
 
 private struct FloatingActionBar: View {
-    let playlist: Playlist
+    let trackCount: Int
     let allDownloaded: Bool
     let allSynced: Bool
     let isDownloadingAll: Bool
@@ -144,7 +167,7 @@ private struct FloatingActionBar: View {
         VStack(spacing: 10) {
             // Progress when downloading
             if isDownloadingAll {
-                let progress = Double(downloadedCount) / Double(max(playlist.trackCount, 1))
+                let progress = Double(downloadedCount) / Double(max(trackCount, 1))
                 VStack(spacing: 4) {
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
@@ -157,7 +180,7 @@ private struct FloatingActionBar: View {
                     }
                     .frame(height: 3)
 
-                    Text("\(downloadedCount) of \(playlist.trackCount)")
+                    Text("\(downloadedCount) of \(trackCount)")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(Color.appFaint)
                 }

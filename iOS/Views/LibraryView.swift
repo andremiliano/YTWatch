@@ -9,7 +9,8 @@ struct LibraryView: View {
 
     private var libraryTitle: String {
         if let name = client.userDisplayName, !name.isEmpty {
-            return "\(name)'s Library"
+            let first = name.components(separatedBy: " ").first ?? name
+            return "\(first)'s Library"
         }
         return "Library"
     }
