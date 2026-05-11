@@ -103,6 +103,7 @@ struct GoogleLoginSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var readyToDone = false   // true once we land on music.youtube.com
     @State private var saving = false
+    @State private var warningDismissed = false
 
     var body: some View {
         NavigationStack {
@@ -113,6 +114,11 @@ struct GoogleLoginSheet: View {
                         YTMusicClient.shared.saveCookies(cookies)
                         dismiss()
                     }
+                }
+
+                // Passkey warning overlay — shown before user interacts
+                if !warningDismissed {
+                    PasskeyWarningBanner { warningDismissed = true }
                 }
 
                 if saving {
@@ -156,6 +162,58 @@ struct GoogleLoginSheet: View {
         .preferredColorScheme(.dark)
     }
 }
+
+// MARK: - Passkey Warning
+
+private struct PasskeyWarningBanner: View {
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack {
+            Spacer()
+
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.yellow)
+                        .font(.system(size: 16))
+                    Text("Passkeys not supported")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+
+                Text("This in-app browser can't use passkeys — it's a system limitation with embedded web views on iOS. Sign in with your **Google password** instead.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color(white: 0.7))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Button(action: onDismiss) {
+                    Text("Got it")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.black)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                        .background(.white)
+                        .clipShape(Capsule())
+                }
+            }
+            .padding(20)
+            .background(Color(white: 0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(Color(white: 1, opacity: 0.08), lineWidth: 0.5)
+            )
+            .padding(.horizontal, 16)
+            .padding(.bottom, 20)
+            .shadow(color: .black.opacity(0.5), radius: 24, y: -8)
+        }
+        .background(Color.black.opacity(0.45).ignoresSafeArea())
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+}
+
+// MARK: - Web View
 
 struct WebLoginView: UIViewRepresentable {
     var onReady: (() -> Void)? = nil

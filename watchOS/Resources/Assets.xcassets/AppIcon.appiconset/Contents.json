@@ -2,31 +2,9 @@
   "images" : [
     {
       "filename" : "AppIcon.png",
-      "idiom" : "watch",
-      "role" : "appLauncher",
-      "size" : "1024x1024",
-      "subtype" : "45mm"
-    },
-    {
-      "filename" : "AppIcon.png",
-      "idiom" : "watch",
-      "role" : "appLauncher",
-      "size" : "1024x1024",
-      "subtype" : "44mm"
-    },
-    {
-      "filename" : "AppIcon.png",
-      "idiom" : "watch",
-      "role" : "appLauncher",
-      "size" : "1024x1024",
-      "subtype" : "41mm"
-    },
-    {
-      "filename" : "AppIcon.png",
-      "idiom" : "watch",
-      "role" : "appLauncher",
-      "size" : "1024x1024",
-      "subtype" : "40mm"
+      "idiom" : "universal",
+      "platform" : "watchos",
+      "size" : "1024x1024"
     }
   ],
   "info" : {
