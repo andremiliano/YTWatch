@@ -97,10 +97,10 @@ final class YTMusicClient: NSObject, ObservableObject {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("https://music.youtube.com/", forHTTPHeaderField: "Origin")
+        request.setValue("https://music.youtube.com", forHTTPHeaderField: "Origin")
         request.setValue("https://music.youtube.com/", forHTTPHeaderField: "Referer")
         request.setValue(
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             forHTTPHeaderField: "User-Agent"
         )
         request.setValue("0", forHTTPHeaderField: "X-Goog-AuthUser")
@@ -110,9 +110,11 @@ final class YTMusicClient: NSObject, ObservableObject {
         let cookieHeader = authCookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
         request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
 
-        // SAPISIDHASH — required by YouTube Music API for authenticated requests.
-        // Format: SHA-1(timestamp + " " + SAPISID + " " + origin)
-        if let sapisid = authCookies.first(where: { $0.name == "SAPISID" })?.value {
+        // SAPISIDHASH — required by YouTube Music API.
+        // Newer Google accounts may only have __Secure-3PAPISID, not SAPISID.
+        let sapisid = authCookies.first(where: { $0.name == "SAPISID" })?.value
+                   ?? authCookies.first(where: { $0.name == "__Secure-3PAPISID" })?.value
+        if let sapisid {
             request.setValue(generateSAPISIDHASH(sapisid: sapisid), forHTTPHeaderField: "Authorization")
         }
 
@@ -124,7 +126,10 @@ final class YTMusicClient: NSObject, ObservableObject {
 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw YTMError.httpError((response as? HTTPURLResponse)?.statusCode ?? -1)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let body = String(data: data, encoding: .utf8) ?? ""
+            print("[YTM] \(status) on \(endpoint) — \(body.prefix(400))")
+            throw YTMError.httpError(status)
         }
         return data
     }
@@ -141,7 +146,7 @@ final class YTMusicClient: NSObject, ObservableObject {
         [
             "client": [
                 "clientName": "WEB_REMIX",
-                "clientVersion": "1.20240101.01.00",
+                "clientVersion": "1.20250101.01.00",
                 "hl": "en",
                 "gl": "US"
             ]
