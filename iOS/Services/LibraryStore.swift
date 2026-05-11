@@ -17,7 +17,7 @@ final class LibraryStore: ObservableObject {
     init() { loadFromDisk() }
 
     func refresh() async {
-        guard YTMusicClient.shared.isAuthenticated else { return }
+        guard YTMusicClient.shared.isAuthenticated, !isLoading else { return }
         isLoading = true
         error = nil
         do {

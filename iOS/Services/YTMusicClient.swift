@@ -116,7 +116,7 @@ final class YTMusicClient: NSObject, ObservableObject {
     private func fetchAccountName() async -> String? {
         for endpoint in ["account/account_menu", "account/get_setting"] {
             guard let data = try? await ytmRequest(endpoint: endpoint, body: [:]) else { continue }
-            print("[YTM] \(endpoint) response: \(String(data: data, encoding: .utf8)?.prefix(500) ?? "")")
+            print("[YTM] \(endpoint) response: \(String(data: data, encoding: .utf8)?.prefix(2000) ?? "")")
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
             if let name = extractAccountName(from: json) { return name }
         }
@@ -124,35 +124,53 @@ final class YTMusicClient: NSObject, ObservableObject {
     }
 
     private func extractAccountName(from json: [String: Any]) -> String? {
-        // Walk entire JSON tree looking for "channelHandle", "displayName", or text runs
-        // inside account-related renderer keys
-        func walk(_ obj: Any) -> String? {
+        // Find activeAccountHeaderRenderer anywhere in the tree, then pull accountName
+        func findAccountHeader(_ obj: Any) -> [String: Any]? {
             if let dict = obj as? [String: Any] {
-                // Direct string fields
-                for key in ["channelName", "displayName", "title"] {
-                    if let s = dict[key] as? String, !s.isEmpty { return s }
-                }
-                // runs[].text pattern
-                if let runs = dict["runs"] as? [[String: Any]],
-                   let text = runs.first?["text"] as? String, !text.isEmpty {
-                    return text
-                }
-                for v in dict.values { if let found = walk(v) { return found } }
+                if dict["accountName"] != nil && dict["accountPhoto"] != nil { return dict }
+                for v in dict.values { if let found = findAccountHeader(v) { return found } }
             } else if let arr = obj as? [Any] {
-                for item in arr { if let found = walk(item) { return found } }
+                for item in arr { if let found = findAccountHeader(item) { return found } }
             }
             return nil
         }
 
-        // Look specifically inside account-header-like keys first
-        for key in ["header", "accountName", "accountSectionHeaderRenderer",
-                    "activeAccountHeaderRenderer", "accountItemSectionRenderer"] {
-            if let sub = json[key] { if let name = walk(sub) { return name } }
+        if let header = findAccountHeader(json),
+           let accountName = header["accountName"] as? [String: Any],
+           let runs = accountName["runs"] as? [[String: Any]],
+           let text = runs.first?["text"] as? String, !text.isEmpty {
+            return text
         }
-        return nil
+
+        // Fallback: any compactLinkRenderer title that isn't an email
+        func findFirstNonEmail(_ obj: Any) -> String? {
+            if let dict = obj as? [String: Any] {
+                if let title = dict["title"] as? [String: Any],
+                   let runs = title["runs"] as? [[String: Any]],
+                   let text = runs.first?["text"] as? String,
+                   !text.contains("@"), !text.isEmpty, text.count < 60 {
+                    return text
+                }
+                for v in dict.values { if let found = findFirstNonEmail(v) { return found } }
+            } else if let arr = obj as? [Any] {
+                for item in arr { if let found = findFirstNonEmail(item) { return found } }
+            }
+            return nil
+        }
+        return findFirstNonEmail(json)
     }
 
     // MARK: - API
+
+    func fetchHomeFeed() async throws -> [Playlist] {
+        let data = try await ytmRequest(endpoint: "browse", body: ["browseId": "FEmusic_home"])
+        return try parsePlaylistsFromBrowse(data)
+    }
+
+    func fetchLikedSongs() async throws -> [Track] {
+        let data = try await ytmRequest(endpoint: "browse", body: ["browseId": "VLSE"])
+        return try parseTracksFromPlaylist(data)
+    }
 
     func fetchLibraryPlaylists() async throws -> [Playlist] {
         // Primary: liked/saved playlists (most reliable endpoint)
