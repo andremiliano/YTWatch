@@ -46,41 +46,66 @@ final class YTMusicClient: NSObject, ObservableObject {
 
     // Fetches the signed-in account name to confirm cookies are valid.
     func fetchUserProfile() async {
-        do {
-            let data = try await ytmRequest(endpoint: "account/get_setting", body: [:])
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        guard let name = await fetchAccountName() else { return }
+        userDisplayName = name
+        UserDefaults.standard.set(name, forKey: "ytm_display_name")
+    }
 
-            // Path: accountSettings → accountName → runs[0] → text
-            func dig(_ obj: Any, keys: [String]) -> Any? {
-                var cur: Any? = obj
-                for k in keys { cur = (cur as? [String: Any])?[k] }
-                return cur
-            }
-
-            let name = (dig(json, keys: ["accountSettings", "accountName", "runs"]) as? [[String: Any]])?
-                .first?["text"] as? String
-
-            if let name {
-                userDisplayName = name
-                UserDefaults.standard.set(name, forKey: "ytm_display_name")
-            }
-        } catch {
-            // Not fatal — user is still logged in even if we can't get the name
+    private func fetchAccountName() async -> String? {
+        // Try account_menu first (most reliable for display name)
+        if let data = try? await ytmRequest(endpoint: "account/account_menu", body: [:]),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let name = extractAccountName(from: json) { return name }
         }
+        // Fallback: account/get_setting
+        if let data = try? await ytmRequest(endpoint: "account/get_setting", body: [:]),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let name = extractAccountName(from: json) { return name }
+        }
+        return nil
+    }
+
+    private func extractAccountName(from json: [String: Any]) -> String? {
+        // Walk entire JSON tree looking for "channelHandle", "displayName", or text runs
+        // inside account-related renderer keys
+        func walk(_ obj: Any) -> String? {
+            if let dict = obj as? [String: Any] {
+                // Direct string fields
+                for key in ["channelName", "displayName", "title"] {
+                    if let s = dict[key] as? String, !s.isEmpty { return s }
+                }
+                // runs[].text pattern
+                if let runs = dict["runs"] as? [[String: Any]],
+                   let text = runs.first?["text"] as? String, !text.isEmpty {
+                    return text
+                }
+                for v in dict.values { if let found = walk(v) { return found } }
+            } else if let arr = obj as? [Any] {
+                for item in arr { if let found = walk(item) { return found } }
+            }
+            return nil
+        }
+
+        // Look specifically inside account-header-like keys first
+        for key in ["header", "accountName", "accountSectionHeaderRenderer",
+                    "activeAccountHeaderRenderer", "accountItemSectionRenderer"] {
+            if let sub = json[key] { if let name = walk(sub) { return name } }
+        }
+        return nil
     }
 
     // MARK: - API
 
     func fetchLibraryPlaylists() async throws -> [Playlist] {
-        // Fetch both owned playlists and saved/liked playlists, merge unique results
-        async let ownedData = ytmRequest(endpoint: "browse", body: ["browseId": "FEmusic_library_privately_owned_playlists"])
-        async let likedData  = ytmRequest(endpoint: "browse", body: ["browseId": "FEmusic_liked_playlists"])
+        // Primary: liked/saved playlists (most reliable endpoint)
+        // Secondary: privately owned playlists (may not exist for all accounts — swallow errors)
+        let likedData = try await ytmRequest(endpoint: "browse", body: ["browseId": "FEmusic_liked_playlists"])
+        let ownedData = try? await ytmRequest(endpoint: "browse", body: ["browseId": "FEmusic_library_privately_owned_playlists"])
 
-        var playlists: [Playlist] = []
-        var seen = Set<String>()
+        var playlists = (try? parsePlaylistsFromBrowse(likedData)) ?? []
+        var seen = Set(playlists.map(\.id))
 
-        for data in try await [ownedData, likedData] {
-            let batch = (try? parsePlaylistsFromBrowse(data)) ?? []
+        if let owned = ownedData, let batch = try? parsePlaylistsFromBrowse(owned) {
             for p in batch where seen.insert(p.id).inserted { playlists.append(p) }
         }
         return playlists
@@ -148,13 +173,21 @@ final class YTMusicClient: NSObject, ObservableObject {
     }
 
     private func ytmContext() -> [String: Any] {
-        [
+        // clientVersion must reflect today's GMT date — YouTube rejects stale versions
+        let datePart = {
+            let f = DateFormatter()
+            f.dateFormat = "yyyyMMdd"
+            f.timeZone = TimeZone(identifier: "UTC")
+            return f.string(from: Date())
+        }()
+        return [
             "client": [
                 "clientName": "WEB_REMIX",
-                "clientVersion": "1.20250101.01.00",
+                "clientVersion": "1.\(datePart).01.00",
                 "hl": "en",
                 "gl": "US"
-            ]
+            ],
+            "user": [String: Any]()
         ]
     }
 

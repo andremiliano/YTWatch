@@ -16,13 +16,23 @@ struct SettingsView: View {
                     VStack(spacing: 24) {
                         // Account card
                         SettingsSection(title: "Account") {
-                            SettingsRow(
-                                icon: "person.circle.fill",
-                                iconColor: .blue,
-                                label: client.userDisplayName ?? "YouTube Music",
-                                value: client.isAuthenticated ? "Signed In ✓" : "Not Signed In",
-                                valueColor: client.isAuthenticated ? Color.ytRed : Color.appFaint
-                            )
+                            if client.isAuthenticated, let name = client.userDisplayName {
+                                SettingsRow(
+                                    icon: "person.circle.fill",
+                                    iconColor: .blue,
+                                    label: name,
+                                    value: "Signed In ✓",
+                                    valueColor: Color.ytRed
+                                )
+                            } else {
+                                SettingsRow(
+                                    icon: "person.circle.fill",
+                                    iconColor: .blue,
+                                    label: client.isAuthenticated ? "YouTube Music" : "Not Signed In",
+                                    value: client.isAuthenticated ? "Signed In ✓" : "",
+                                    valueColor: client.isAuthenticated ? Color.ytRed : Color.appFaint
+                                )
+                            }
 
                             if client.isAuthenticated {
                                 Divider().background(Color.appBorder).padding(.horizontal, 14)
@@ -120,9 +130,11 @@ struct SettingsView: View {
             .navigationBarTitleDisplayMode(.large)
             .toolbarBackground(Color.appBg, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
-            .confirmationDialog("Sign Out?", isPresented: $showLogoutConfirm) {
+            .alert("Sign Out?", isPresented: $showLogoutConfirm) {
                 Button("Sign Out", role: .destructive) { client.logout() }
                 Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Your saved cookies will be removed. You'll need to sign in again to sync playlists.")
             }
         }
         .preferredColorScheme(.dark)
