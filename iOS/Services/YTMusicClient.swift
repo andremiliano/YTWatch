@@ -1,5 +1,6 @@
 import Foundation
 import WebKit
+import CryptoKit
 
 // Interfaces with YouTube Music's internal browsing API.
 // Auth is handled by capturing cookies from a WKWebView Google login.
@@ -9,6 +10,7 @@ final class YTMusicClient: NSObject, ObservableObject {
     static let shared = YTMusicClient()
 
     @Published var isAuthenticated = false
+    @Published var userDisplayName: String?
     @Published var authError: String?
 
     private var authCookies: [HTTPCookie] = []
@@ -20,6 +22,7 @@ final class YTMusicClient: NSObject, ObservableObject {
               let decoded = try? JSONDecoder().decode([CookieArchive].self, from: data) else { return }
         authCookies = decoded.compactMap { $0.cookie }
         isAuthenticated = !authCookies.isEmpty
+        userDisplayName = UserDefaults.standard.string(forKey: "ytm_display_name")
     }
 
     func saveCookies(_ cookies: [HTTPCookie]) {
@@ -29,12 +32,41 @@ final class YTMusicClient: NSObject, ObservableObject {
             KeychainHelper.save(data, key: "ytm_cookies")
         }
         isAuthenticated = true
+        // Fetch profile in the background after saving
+        Task { await fetchUserProfile() }
     }
 
     func logout() {
         authCookies = []
+        userDisplayName = nil
         KeychainHelper.delete(key: "ytm_cookies")
+        UserDefaults.standard.removeObject(forKey: "ytm_display_name")
         isAuthenticated = false
+    }
+
+    // Fetches the signed-in account name to confirm cookies are valid.
+    func fetchUserProfile() async {
+        do {
+            let data = try await ytmRequest(endpoint: "account/get_setting", body: [:])
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+
+            // Path: accountSettings → accountName → runs[0] → text
+            func dig(_ obj: Any, keys: [String]) -> Any? {
+                var cur: Any? = obj
+                for k in keys { cur = (cur as? [String: Any])?[k] }
+                return cur
+            }
+
+            let name = (dig(json, keys: ["accountSettings", "accountName", "runs"]) as? [[String: Any]])?
+                .first?["text"] as? String
+
+            if let name {
+                userDisplayName = name
+                UserDefaults.standard.set(name, forKey: "ytm_display_name")
+            }
+        } catch {
+            // Not fatal — user is still logged in even if we can't get the name
+        }
     }
 
     // MARK: - API
@@ -72,10 +104,17 @@ final class YTMusicClient: NSObject, ObservableObject {
             forHTTPHeaderField: "User-Agent"
         )
         request.setValue("0", forHTTPHeaderField: "X-Goog-AuthUser")
+        request.setValue("https://music.youtube.com", forHTTPHeaderField: "X-Origin")
 
-        // Attach auth cookies as header
+        // Cookie header
         let cookieHeader = authCookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
         request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+
+        // SAPISIDHASH — required by YouTube Music API for authenticated requests.
+        // Format: SHA-1(timestamp + " " + SAPISID + " " + origin)
+        if let sapisid = authCookies.first(where: { $0.name == "SAPISID" })?.value {
+            request.setValue(generateSAPISIDHASH(sapisid: sapisid), forHTTPHeaderField: "Authorization")
+        }
 
         // Wrap body in standard YouTube Music context
         var fullBody = body
@@ -88,6 +127,14 @@ final class YTMusicClient: NSObject, ObservableObject {
             throw YTMError.httpError((response as? HTTPURLResponse)?.statusCode ?? -1)
         }
         return data
+    }
+
+    private func generateSAPISIDHASH(sapisid: String) -> String {
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let message = "\(timestamp) \(sapisid) https://music.youtube.com"
+        let digest = Insecure.SHA1.hash(data: Data(message.utf8))
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        return "SAPISIDHASH \(timestamp)_\(hex)"
     }
 
     private func ytmContext() -> [String: Any] {

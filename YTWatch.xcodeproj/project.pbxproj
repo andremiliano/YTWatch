@@ -13,12 +13,14 @@
 		10572F613A88D5C7E970B102 /* WatchMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59FA3BF8065286B952EEB1F7 /* WatchMessage.swift */; };
 		1924EE5673D0946AADC89F34 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = B07783B100CF5850463D14EA /* KeychainHelper.swift */; };
 		1CE7D3A29F56080B78DBBEDC /* Track.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F6ACB4AC24B6431D70A9B37 /* Track.swift */; };
+		3302DA110FBB4DA8D3F68DBB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AC2F5A0CA43CDB5226D374F8 /* Assets.xcassets */; };
 		38FA5B2E15620644D4F54CFC /* PlaylistListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09A4619D2E2FEA88BB78ED91 /* PlaylistListView.swift */; };
 		3E557486A6BB3036873BE3B8 /* LibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32EAE5FFB5EA692D4041783F /* LibraryStore.swift */; };
 		40FC366D151D925ADEB4FD55 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD591D6EE043847CF2A4FD3F /* SettingsView.swift */; };
 		50C244062BB43F2FEEBAC567 /* YTWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA352555C26B7179E80D5BC8 /* YTWatchApp.swift */; };
 		54186A5C3E3ABD8118DD553B /* WatchSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 563E4B56A2D3BEAB2A830620 /* WatchSyncManager.swift */; };
 		5A69A0747999140453D9A3C6 /* TrackListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4580F7CA038CF86CA4DBA2FB /* TrackListView.swift */; };
+		5AD2CED0684E3091D42BCBD8 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3B30DDF4D35160407C00C07A /* Assets.xcassets */; };
 		72BDE1E56AE58BF3BC435F96 /* WatchPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86D2B9954FCE584D6F5A9B6B /* WatchPlayer.swift */; };
 		95A875AC0EAE037DF456C4AC /* Track.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F6ACB4AC24B6431D70A9B37 /* Track.swift */; };
 		9E4D5D5D4B9D9511C7AAC8E2 /* NowPlayingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64C6D2A2D7CEEBABB42D57F8 /* NowPlayingView.swift */; };
@@ -62,6 +64,7 @@
 		09A4619D2E2FEA88BB78ED91 /* PlaylistListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistListView.swift; sourceTree = "<group>"; };
 		32EAE5FFB5EA692D4041783F /* LibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryStore.swift; sourceTree = "<group>"; };
 		346FF76E5A956D803B4E7C7A /* WatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchApp.swift; sourceTree = "<group>"; };
+		3B30DDF4D35160407C00C07A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4580F7CA038CF86CA4DBA2FB /* TrackListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackListView.swift; sourceTree = "<group>"; };
 		563E4B56A2D3BEAB2A830620 /* WatchSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchSyncManager.swift; sourceTree = "<group>"; };
 		59FA3BF8065286B952EEB1F7 /* WatchMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchMessage.swift; sourceTree = "<group>"; };
@@ -71,6 +74,7 @@
 		86D2B9954FCE584D6F5A9B6B /* WatchPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchPlayer.swift; sourceTree = "<group>"; };
 		9755DB0BF2EFEE4E60AF087C /* Secrets.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Secrets.xcconfig; sourceTree = "<group>"; };
 		A0E631B1D2C269237FAA4814 /* PlaylistDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistDetailView.swift; sourceTree = "<group>"; };
+		AC2F5A0CA43CDB5226D374F8 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AC557CF97EF6C23FA4FD3E1B /* YTWatch Watch App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "YTWatch Watch App.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		AD591D6EE043847CF2A4FD3F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		B07783B100CF5850463D14EA /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
@@ -116,6 +120,14 @@
 			path = Services;
 			sourceTree = "<group>";
 		};
+		331A552AA9E09A96662F16F7 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				AC2F5A0CA43CDB5226D374F8 /* Assets.xcassets */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
 		4877C52E18E1E8E8B9917AEE /* Config */ = {
 			isa = PBXGroup;
 			children = (
@@ -147,6 +159,7 @@
 		A481C9EAB178216AD72E0532 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				3B30DDF4D35160407C00C07A /* Assets.xcassets */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -163,6 +176,7 @@
 			isa = PBXGroup;
 			children = (
 				EE66DFE41301E0EC18492FC0 /* App */,
+				331A552AA9E09A96662F16F7 /* Resources */,
 				E69373DDA3E28EFC1569C207 /* Services */,
 				C3B0D5DEE59CB58707E6B11F /* Views */,
 			);
@@ -226,6 +240,7 @@
 			buildConfigurationList = 913905DC9A49DF91B4BFFE90 /* Build configuration list for PBXNativeTarget "YTWatch Watch App" */;
 			buildPhases = (
 				2FBDA93CFBD4287A64F071A8 /* Sources */,
+				7003DABF9F1DF97C607AAF78 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -243,6 +258,7 @@
 			buildConfigurationList = 8D09E4073D9018C755C625E6 /* Build configuration list for PBXNativeTarget "YTWatch" */;
 			buildPhases = (
 				FBDDB63C6752EB8C35A9B11B /* Sources */,
+				6D23A55F0BD0EE0142F55E7B /* Resources */,
 				772DBCFEE29BDFAE1C2631B8 /* Embed Watch Content */,
 			);
 			buildRules = (
@@ -287,6 +303,25 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		6D23A55F0BD0EE0142F55E7B /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5AD2CED0684E3091D42BCBD8 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7003DABF9F1DF97C607AAF78 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3302DA110FBB4DA8D3F68DBB /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		2FBDA93CFBD4287A64F071A8 /* Sources */ = {

@@ -101,20 +101,55 @@ struct AuthView: View {
 
 struct GoogleLoginSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @State private var readyToDone = false   // true once we land on music.youtube.com
+    @State private var saving = false
 
     var body: some View {
         NavigationStack {
-            WebLoginView { cookies in
-                Task { @MainActor in
-                    YTMusicClient.shared.saveCookies(cookies)
-                    dismiss()
+            ZStack {
+                WebLoginView(onReady: { readyToDone = true }) { cookies in
+                    saving = true
+                    Task { @MainActor in
+                        YTMusicClient.shared.saveCookies(cookies)
+                        dismiss()
+                    }
+                }
+
+                if saving {
+                    Color.black.opacity(0.6).ignoresSafeArea()
+                    VStack(spacing: 12) {
+                        ProgressView().tint(.white)
+                        Text("Signing in…")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.white)
+                    }
                 }
             }
-            .navigationTitle("Sign In")
+            .navigationTitle("Sign In to Google")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        // Manual harvest — in case auto-detect didn't fire
+                        saving = true
+                        WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
+                            let authCookies = cookies.filter {
+                                $0.domain.hasSuffix(".youtube.com") || $0.domain.hasSuffix(".google.com")
+                            }
+                            Task { @MainActor in
+                                if !authCookies.isEmpty {
+                                    YTMusicClient.shared.saveCookies(authCookies)
+                                }
+                                dismiss()
+                            }
+                        }
+                    }
+                    .fontWeight(.semibold)
+                    .foregroundStyle(readyToDone ? Color.ytRed : Color.appFaint)
+                    .disabled(!readyToDone)
                 }
             }
         }
@@ -123,9 +158,10 @@ struct GoogleLoginSheet: View {
 }
 
 struct WebLoginView: UIViewRepresentable {
+    var onReady: (() -> Void)? = nil
     var onLoginComplete: ([HTTPCookie]) -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(onComplete: onLoginComplete) }
+    func makeCoordinator() -> Coordinator { Coordinator(onReady: onReady, onComplete: onLoginComplete) }
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -141,25 +177,38 @@ struct WebLoginView: UIViewRepresentable {
     func updateUIView(_ uiView: WKWebView, context: Context) {}
 
     final class Coordinator: NSObject, WKNavigationDelegate {
+        let onReady: (() -> Void)?
         let onComplete: ([HTTPCookie]) -> Void
         private var didComplete = false
 
-        init(onComplete: @escaping ([HTTPCookie]) -> Void) { self.onComplete = onComplete }
+        init(onReady: (() -> Void)?, onComplete: @escaping ([HTTPCookie]) -> Void) {
+            self.onReady = onReady
+            self.onComplete = onComplete
+        }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            guard let urlString = webView.url?.absoluteString else { return }
+
+            // Enable Done button as soon as we're on any music.youtube.com page
+            if urlString.hasPrefix("https://music.youtube.com"),
+               !urlString.contains("/ServiceLogin"), !urlString.contains("/signin") {
+                DispatchQueue.main.async { self.onReady?() }
+            }
+
+            // Auto-complete only at the clean home page + require SAPISID cookie
             guard !didComplete,
-                  let urlString = webView.url?.absoluteString,
                   urlString.hasPrefix("https://music.youtube.com"),
                   !urlString.contains("/ServiceLogin"),
                   !urlString.contains("/signin") else { return }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self, weak webView] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self, weak webView] in
                 guard let self, let webView else { return }
                 webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
                     let authCookies = cookies.filter {
                         $0.domain.hasSuffix(".youtube.com") || $0.domain.hasSuffix(".google.com")
                     }
-                    guard !authCookies.isEmpty else { return }
+                    // Must have SAPISID — without it the API calls will 400
+                    guard authCookies.contains(where: { $0.name == "SAPISID" }) else { return }
                     self.didComplete = true
                     DispatchQueue.main.async { self.onComplete(authCookies) }
                 }

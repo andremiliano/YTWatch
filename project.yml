@@ -36,6 +36,7 @@ targets:
       - path: iOS
         excludes: []
       - path: Shared
+      - path: iOS/Resources/Assets.xcassets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.andre.ytwatch.app
@@ -56,6 +57,7 @@ targets:
       - path: watchOS
         excludes: []
       - path: Shared
+      - path: watchOS/Resources/Assets.xcassets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.andre.ytwatch.app.watchkitapp

@@ -19,8 +19,8 @@ struct SettingsView: View {
                             SettingsRow(
                                 icon: "person.circle.fill",
                                 iconColor: .blue,
-                                label: "YouTube Music",
-                                value: client.isAuthenticated ? "Signed In" : "Not Signed In",
+                                label: client.userDisplayName ?? "YouTube Music",
+                                value: client.isAuthenticated ? "Signed In ✓" : "Not Signed In",
                                 valueColor: client.isAuthenticated ? Color.ytRed : Color.appFaint
                             )
 
