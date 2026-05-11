@@ -72,11 +72,18 @@ final class YTMusicClient: NSObject, ObservableObject {
     // MARK: - API
 
     func fetchLibraryPlaylists() async throws -> [Playlist] {
-        let body: [String: Any] = [
-            "browseId": "FEmusic_library_privately_owned_playlists"
-        ]
-        let data = try await ytmRequest(endpoint: "browse", body: body)
-        return try parsePlaylistsFromBrowse(data)
+        // Fetch both owned playlists and saved/liked playlists, merge unique results
+        async let ownedData = ytmRequest(endpoint: "browse", body: ["browseId": "FEmusic_library_privately_owned_playlists"])
+        async let likedData  = ytmRequest(endpoint: "browse", body: ["browseId": "FEmusic_liked_playlists"])
+
+        var playlists: [Playlist] = []
+        var seen = Set<String>()
+
+        for data in try await [ownedData, likedData] {
+            let batch = (try? parsePlaylistsFromBrowse(data)) ?? []
+            for p in batch where seen.insert(p.id).inserted { playlists.append(p) }
+        }
+        return playlists
     }
 
     func fetchPlaylistTracks(playlistId: String) async throws -> [Track] {
@@ -88,15 +95,13 @@ final class YTMusicClient: NSObject, ObservableObject {
 
     // MARK: - HTTP
 
-    private static var apiKey: String {
-        Bundle.main.infoDictionary?["YTMAPIKey"] as? String ?? ""
-    }
-
     private func ytmRequest(endpoint: String, body: [String: Any]) async throws -> Data {
-        let url = URL(string: "https://music.youtube.com/youtubei/v1/\(endpoint)?key=\(Self.apiKey)")!
+        let url = URL(string: "https://music.youtube.com/youtubei/v1/\(endpoint)?prettyPrint=false")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
         request.setValue("https://music.youtube.com", forHTTPHeaderField: "Origin")
         request.setValue("https://music.youtube.com/", forHTTPHeaderField: "Referer")
         request.setValue(
