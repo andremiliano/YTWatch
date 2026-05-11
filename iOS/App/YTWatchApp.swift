@@ -43,6 +43,11 @@ struct ContentView: View {
                     Label("Library", systemImage: "music.note.list")
                 }
 
+            ForYouView()
+                .tabItem {
+                    Label("For You", systemImage: "wand.and.stars")
+                }
+
             SettingsView()
                 .tabItem {
                     Label("Settings", systemImage: "gear")
