@@ -6,7 +6,22 @@ struct YTWatchApp: App {
 
     init() {
         YTMusicClient.shared.loadSavedCookies()
-        _ = WatchSyncManager.shared  // activate WCSession early
+        _ = WatchSyncManager.shared
+
+        // Force dark tab bar / nav bar appearance globally
+        let tabBarAppearance = UITabBarAppearance()
+        tabBarAppearance.configureWithOpaqueBackground()
+        tabBarAppearance.backgroundColor = UIColor(red: 0.047, green: 0.047, blue: 0.047, alpha: 1)
+        UITabBar.appearance().standardAppearance = tabBarAppearance
+        UITabBar.appearance().scrollEdgeAppearance = tabBarAppearance
+
+        let navAppearance = UINavigationBarAppearance()
+        navAppearance.configureWithOpaqueBackground()
+        navAppearance.backgroundColor = UIColor(red: 0.047, green: 0.047, blue: 0.047, alpha: 1)
+        navAppearance.titleTextAttributes = [.foregroundColor: UIColor.white]
+        navAppearance.largeTitleTextAttributes = [.foregroundColor: UIColor.white]
+        UINavigationBar.appearance().standardAppearance = navAppearance
+        UINavigationBar.appearance().scrollEdgeAppearance = navAppearance
     }
 
     var body: some Scene {
@@ -24,10 +39,16 @@ struct ContentView: View {
     var body: some View {
         TabView {
             LibraryView()
-                .tabItem { Label("Library", systemImage: "music.note.list") }
+                .tabItem {
+                    Label("Library", systemImage: "music.note.list")
+                }
 
             SettingsView()
-                .tabItem { Label("Settings", systemImage: "gear") }
+                .tabItem {
+                    Label("Settings", systemImage: "gear")
+                }
         }
+        .preferredColorScheme(.dark)
+        .tint(Color.ytRed)
     }
 }

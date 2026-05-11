@@ -26,8 +26,10 @@
 		A6D4BE41A3A7DC595ADA9516 /* YTMusicClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE9FE11CCDCEE23BB1C21641 /* YTMusicClient.swift */; };
 		B051AA0B0A41B007F46FC035 /* AuthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74AD30716E852F22A7C97DFE /* AuthView.swift */; };
 		B055738BF39CB16E101B2034 /* WatchFileReceiver.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1FBA72831E785A4D087D397 /* WatchFileReceiver.swift */; };
+		B15AF3BD77A71CFA9E3C1934 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3DDB81D7319D6856EF24414 /* Theme.swift */; };
 		B7AA014D1886782F9D4A5549 /* AudioDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E518DD6407B9B7C0EC3C8F1C /* AudioDownloader.swift */; };
 		C4DD4EE7C66370CA70CE53EE /* YTWatch Watch App.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = AC557CF97EF6C23FA4FD3E1B /* YTWatch Watch App.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		CD95162A52105AE3EB774310 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3DDB81D7319D6856EF24414 /* Theme.swift */; };
 		D18A15DBDEEA621C7E5DA159 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5147BFC04F2B38820EA9212 /* LibraryView.swift */; };
 		E36C4C61022C96340669558F /* WatchMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59FA3BF8065286B952EEB1F7 /* WatchMessage.swift */; };
 /* End PBXBuildFile section */
@@ -75,6 +77,7 @@
 		B1AB568EAD46B5754B8614B6 /* Playlist.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Playlist.swift; sourceTree = "<group>"; };
 		BE9FE11CCDCEE23BB1C21641 /* YTMusicClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YTMusicClient.swift; sourceTree = "<group>"; };
 		C1FBA72831E785A4D087D397 /* WatchFileReceiver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchFileReceiver.swift; sourceTree = "<group>"; };
+		D3DDB81D7319D6856EF24414 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		E5147BFC04F2B38820EA9212 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		E518DD6407B9B7C0EC3C8F1C /* AudioDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDownloader.swift; sourceTree = "<group>"; };
 		EA352555C26B7179E80D5BC8 /* YTWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YTWatchApp.swift; sourceTree = "<group>"; };
@@ -96,6 +99,7 @@
 			isa = PBXGroup;
 			children = (
 				0E8949CC32342A8066F1D80C /* Models */,
+				D3DDB81D7319D6856EF24414 /* Theme.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -292,6 +296,7 @@
 				9E4D5D5D4B9D9511C7AAC8E2 /* NowPlayingView.swift in Sources */,
 				0BECE06888AC3BF655BAE663 /* Playlist.swift in Sources */,
 				38FA5B2E15620644D4F54CFC /* PlaylistListView.swift in Sources */,
+				B15AF3BD77A71CFA9E3C1934 /* Theme.swift in Sources */,
 				95A875AC0EAE037DF456C4AC /* Track.swift in Sources */,
 				5A69A0747999140453D9A3C6 /* TrackListView.swift in Sources */,
 				0C0A0B8E138B2F2AF2B51CB1 /* WatchApp.swift in Sources */,
@@ -313,6 +318,7 @@
 				03601AF1CD250E60E066001B /* Playlist.swift in Sources */,
 				A29E84813E364CB46F7E032C /* PlaylistDetailView.swift in Sources */,
 				40FC366D151D925ADEB4FD55 /* SettingsView.swift in Sources */,
+				CD95162A52105AE3EB774310 /* Theme.swift in Sources */,
 				1CE7D3A29F56080B78DBBEDC /* Track.swift in Sources */,
 				10572F613A88D5C7E970B102 /* WatchMessage.swift in Sources */,
 				54186A5C3E3ABD8118DD553B /* WatchSyncManager.swift in Sources */,
