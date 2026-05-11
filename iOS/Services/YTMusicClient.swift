@@ -16,7 +16,7 @@ final class YTMusicClient: NSObject, ObservableObject {
     // MARK: - Auth
 
     func loadSavedCookies() {
-        guard let data = UserDefaults.standard.data(forKey: "ytm_cookies"),
+        guard let data = KeychainHelper.load(key: "ytm_cookies"),
               let decoded = try? JSONDecoder().decode([CookieArchive].self, from: data) else { return }
         authCookies = decoded.compactMap { $0.cookie }
         isAuthenticated = !authCookies.isEmpty
@@ -26,14 +26,14 @@ final class YTMusicClient: NSObject, ObservableObject {
         authCookies = cookies
         let archives = cookies.map { CookieArchive(cookie: $0) }
         if let data = try? JSONEncoder().encode(archives) {
-            UserDefaults.standard.set(data, forKey: "ytm_cookies")
+            KeychainHelper.save(data, key: "ytm_cookies")
         }
         isAuthenticated = true
     }
 
     func logout() {
         authCookies = []
-        UserDefaults.standard.removeObject(forKey: "ytm_cookies")
+        KeychainHelper.delete(key: "ytm_cookies")
         isAuthenticated = false
     }
 
@@ -56,8 +56,12 @@ final class YTMusicClient: NSObject, ObservableObject {
 
     // MARK: - HTTP
 
+    private static var apiKey: String {
+        Bundle.main.infoDictionary?["YTMAPIKey"] as? String ?? ""
+    }
+
     private func ytmRequest(endpoint: String, body: [String: Any]) async throws -> Data {
-        let url = URL(string: "https://music.youtube.com/youtubei/v1/\(endpoint)?key=AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30")!
+        let url = URL(string: "https://music.youtube.com/youtubei/v1/\(endpoint)?key=\(Self.apiKey)")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

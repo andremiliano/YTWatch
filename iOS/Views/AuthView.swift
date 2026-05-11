@@ -1,11 +1,9 @@
 import SwiftUI
 import WebKit
 
-// Full-screen Google login via WKWebView — captures auth cookies on success.
 struct AuthView: View {
     @ObservedObject private var client = YTMusicClient.shared
     @State private var showWebView = false
-    @State private var checking = false
 
     var body: some View {
         VStack(spacing: 24) {
@@ -36,18 +34,14 @@ struct AuthView: View {
 
 struct GoogleLoginSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @State private var url = URL(string: "https://accounts.google.com/ServiceLogin?service=youtube&continue=https://music.youtube.com")!
 
     var body: some View {
         NavigationStack {
-            WebLoginView(url: $url) { cookies in
-                let ytCookies = cookies.filter {
-                    $0.domain.contains("youtube") || $0.domain.contains("google")
-                }
+            WebLoginView { cookies in
                 Task { @MainActor in
-                    YTMusicClient.shared.saveCookies(ytCookies)
+                    YTMusicClient.shared.saveCookies(cookies)
+                    dismiss()
                 }
-                dismiss()
             }
             .navigationTitle("Sign In")
             .navigationBarTitleDisplayMode(.inline)
@@ -61,17 +55,23 @@ struct GoogleLoginSheet: View {
 }
 
 struct WebLoginView: UIViewRepresentable {
-    @Binding var url: URL
     var onLoginComplete: ([HTTPCookie]) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onComplete: onLoginComplete) }
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        // Fresh cookie store so we capture exactly what this login produces
-        config.websiteDataStore = .nonPersistent()
+        // Use the persistent shared store so Google recognises the session properly.
+        // Non-persistent stores trigger Google's "disallowed_useragent" HTTP 400.
+        config.websiteDataStore = .default()
+
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
+
+        // Impersonate Mobile Safari — Google blocks the default WKWebView UA.
+        webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
+
+        let url = URL(string: "https://accounts.google.com/ServiceLogin?service=youtube&continue=https://music.youtube.com")!
         webView.load(URLRequest(url: url))
         return webView
     }
@@ -80,21 +80,40 @@ struct WebLoginView: UIViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         let onComplete: ([HTTPCookie]) -> Void
+        private var didComplete = false
 
         init(onComplete: @escaping ([HTTPCookie]) -> Void) {
             self.onComplete = onComplete
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            guard let url = webView.url?.absoluteString,
-                  url.contains("music.youtube.com") else { return }
+            guard !didComplete,
+                  let urlString = webView.url?.absoluteString,
+                  // Only harvest once we've actually landed on the YT Music home page,
+                  // not during intermediate auth redirects.
+                  urlString.hasPrefix("https://music.youtube.com"),
+                  !urlString.contains("/ServiceLogin"),
+                  !urlString.contains("/signin") else { return }
 
-            // We landed on YT Music — harvest cookies
-            webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
-                DispatchQueue.main.async {
-                    self.onComplete(cookies)
+            // Give the page a moment to set all cookies before harvesting.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self, weak webView] in
+                guard let self, let webView else { return }
+                webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
+                    let authCookies = cookies.filter {
+                        $0.domain.hasSuffix(".youtube.com") || $0.domain.hasSuffix(".google.com")
+                    }
+                    guard !authCookies.isEmpty else { return }
+                    self.didComplete = true
+                    DispatchQueue.main.async { self.onComplete(authCookies) }
                 }
             }
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            // Ignore cancellations (common during redirects)
+            let nsError = error as NSError
+            guard nsError.code != NSURLErrorCancelled else { return }
+            print("WebView error: \(error.localizedDescription)")
         }
     }
 }

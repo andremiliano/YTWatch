@@ -24,6 +24,9 @@
     <array>
         <string>UIInterfaceOrientationPortrait</string>
     </array>
+    <key>YTMAPIKey</key>
+    <string>$(YTM_API_KEY)</string>
+
     <!-- Background audio -->
     <key>UIBackgroundModes</key>
     <array>
