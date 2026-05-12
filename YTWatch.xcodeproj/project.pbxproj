@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		06BC50E78293A73FFB9D2085 /* DownloadsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36CF9C369D25073E0FFDD227 /* DownloadsListView.swift */; };
 		03601AF1CD250E60E066001B /* Playlist.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1AB568EAD46B5754B8614B6 /* Playlist.swift */; };
 		0BECE06888AC3BF655BAE663 /* Playlist.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1AB568EAD46B5754B8614B6 /* Playlist.swift */; };
 		0C0A0B8E138B2F2AF2B51CB1 /* WatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 346FF76E5A956D803B4E7C7A /* WatchApp.swift */; };
@@ -36,6 +37,8 @@
 		D18A15DBDEEA621C7E5DA159 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5147BFC04F2B38820EA9212 /* LibraryView.swift */; };
 		E36C4C61022C96340669558F /* WatchMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59FA3BF8065286B952EEB1F7 /* WatchMessage.swift */; };
 		FCD80C55BBDAC570776EEEF5 /* ForYouView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 557111319ED3FF3B6D01FB88 /* ForYouView.swift */; };
+		E1A2B3C4D5E6F7081234ABCD /* ExploreView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1B2C3D4E5F60718ABCD1234 /* ExploreView.swift */; };
+		A1B2C3D4E5F60718DEAD0001 /* ArtistView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718DEAD0002 /* ArtistView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -63,6 +66,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		36CF9C369D25073E0FFDD227 /* DownloadsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadsListView.swift; sourceTree = "<group>"; };
 		09A4619D2E2FEA88BB78ED91 /* PlaylistListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistListView.swift; sourceTree = "<group>"; };
 		32EAE5FFB5EA692D4041783F /* LibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryStore.swift; sourceTree = "<group>"; };
 		346FF76E5A956D803B4E7C7A /* WatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchApp.swift; sourceTree = "<group>"; };
@@ -74,6 +78,7 @@
 		64C6D2A2D7CEEBABB42D57F8 /* NowPlayingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingView.swift; sourceTree = "<group>"; };
 		6F6ACB4AC24B6431D70A9B37 /* Track.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Track.swift; sourceTree = "<group>"; };
 		74AD30716E852F22A7C97DFE /* AuthView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthView.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718DEAD0002 /* ArtistView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtistView.swift; sourceTree = "<group>"; };
 		86D2B9954FCE584D6F5A9B6B /* WatchPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchPlayer.swift; sourceTree = "<group>"; };
 		8DD10FCA6768AEE0C08209F2 /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
 		9755DB0BF2EFEE4E60AF087C /* Secrets.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Secrets.xcconfig; sourceTree = "<group>"; };
@@ -89,7 +94,8 @@
 		E5147BFC04F2B38820EA9212 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		E518DD6407B9B7C0EC3C8F1C /* AudioDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDownloader.swift; sourceTree = "<group>"; };
 		EA352555C26B7179E80D5BC8 /* YTWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YTWatchApp.swift; sourceTree = "<group>"; };
-		EB555F2F815A575FA1F0D4C3 /* YTWatch.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = YTWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		EB555F2F815A575FA1F0D4C3 /* YTWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = YTWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F1B2C3D4E5F60718ABCD1234 /* ExploreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExploreView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -144,6 +150,9 @@
 			isa = PBXGroup;
 			children = (
 				74AD30716E852F22A7C97DFE /* AuthView.swift */,
+				A1B2C3D4E5F60718DEAD0002 /* ArtistView.swift */,
+				36CF9C369D25073E0FFDD227 /* DownloadsListView.swift */,
+				F1B2C3D4E5F60718ABCD1234 /* ExploreView.swift */,
 				557111319ED3FF3B6D01FB88 /* ForYouView.swift */,
 				E5147BFC04F2B38820EA9212 /* LibraryView.swift */,
 				A0E631B1D2C269237FAA4814 /* PlaylistDetailView.swift */,
@@ -287,8 +296,6 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1600;
-				TargetAttributes = {
-				};
 			};
 			buildConfigurationList = 9FAD2F1E00B130242A588823 /* Build configuration list for PBXProject "YTWatch" */;
 			developmentRegion = en;
@@ -352,7 +359,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				B7AA014D1886782F9D4A5549 /* AudioDownloader.swift in Sources */,
+				A1B2C3D4E5F60718DEAD0001 /* ArtistView.swift in Sources */,
 				B051AA0B0A41B007F46FC035 /* AuthView.swift in Sources */,
+				06BC50E78293A73FFB9D2085 /* DownloadsListView.swift in Sources */,
+				E1A2B3C4D5E6F7081234ABCD /* ExploreView.swift in Sources */,
 				FCD80C55BBDAC570776EEEF5 /* ForYouView.swift in Sources */,
 				1924EE5673D0946AADC89F34 /* KeychainHelper.swift in Sources */,
 				3E557486A6BB3036873BE3B8 /* LibraryStore.swift in Sources */,
@@ -386,6 +396,8 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Config/watchOS.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = HJHD3TJGBM;
 				INFOPLIST_FILE = "Config/watchOS-Info.plist";
 				PRODUCT_BUNDLE_IDENTIFIER = com.andre.ytwatch.app.watchkitapp;
 				SDKROOT = watchos;
@@ -430,7 +442,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 20;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_CONCURRENCY_CHECKING = complete;
@@ -460,6 +472,8 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Config/watchOS.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = HJHD3TJGBM;
 				INFOPLIST_FILE = "Config/watchOS-Info.plist";
 				PRODUCT_BUNDLE_IDENTIFIER = com.andre.ytwatch.app.watchkitapp;
 				SDKROOT = watchos;
@@ -474,7 +488,8 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Config/iOS.entitlements;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = HJHD3TJGBM;
 				INFOPLIST_FILE = "Config/iOS-Info.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -492,7 +507,8 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Config/iOS.entitlements;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = HJHD3TJGBM;
 				INFOPLIST_FILE = "Config/iOS-Info.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -541,7 +557,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 20;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_CONCURRENCY_CHECKING = complete;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

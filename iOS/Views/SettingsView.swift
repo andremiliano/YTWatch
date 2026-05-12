@@ -5,7 +5,22 @@ struct SettingsView: View {
     @ObservedObject private var downloader = AudioDownloader.shared
     @ObservedObject private var sync = WatchSyncManager.shared
     @State private var showLogoutConfirm = false
+    @State private var showClearAllConfirm = false
     @State private var appeared = false
+
+    private var estimatedWatchStorage: String {
+        let syncedIds = sync.syncedTrackIds
+        var totalBytes: Int64 = 0
+        for id in syncedIds {
+            if let url = downloader.downloadedTracks[id] {
+                let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+                totalBytes += size
+            }
+        }
+        let mb = Double(totalBytes) / 1_000_000
+        if mb < 1 { return "< 1 MB" }
+        return String(format: "%.0f MB", mb)
+    }
 
     var body: some View {
         NavigationStack {
@@ -57,31 +72,98 @@ struct SettingsView: View {
                                 label: "Synced Tracks",
                                 value: "\(sync.syncedTrackIds.count)"
                             )
+
+                            Divider().background(Color.appBorder).padding(.horizontal, 14)
+
+                            SettingsRow(
+                                icon: "internaldrive",
+                                iconColor: Color.appDim,
+                                label: "Audio on Watch",
+                                value: estimatedWatchStorage
+                            )
+
+                            if !sync.transferringTrackIds.isEmpty || sync.pendingSyncCount > 0 {
+                                Divider().background(Color.appBorder).padding(.horizontal, 14)
+
+                                HStack(spacing: 12) {
+                                    ProgressView()
+                                        .tint(Color.ytRed)
+                                        .scaleEffect(0.7)
+                                        .frame(width: 28, height: 28)
+
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text("Syncing to Watch")
+                                            .font(.system(size: 15))
+                                            .foregroundStyle(.white)
+                                        let transferring = sync.transferringTrackIds.count
+                                        let pending = sync.pendingSyncCount
+                                        Text("\(transferring) sending · \(pending) queued")
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(Color.appFaint)
+                                    }
+
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 13)
+                            }
                         }
 
                         // Storage card
                         SettingsSection(title: "Storage") {
                             SettingsRow(
-                                icon: "internaldrive",
-                                iconColor: .orange,
-                                label: "Downloaded Tracks",
-                                value: "\(downloader.downloadedTracks.count)"
+                                icon: "iphone",
+                                iconColor: .blue,
+                                label: "Audio on iPhone",
+                                value: downloader.formattedTotalSize
                             )
+
+                            Divider().background(Color.appBorder).padding(.horizontal, 14)
+
+                            NavigationLink(destination: DownloadsListView()) {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "music.note.list")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(.orange)
+                                        .frame(width: 28, height: 28)
+                                        .background(Color.orange.opacity(0.12))
+                                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+
+                                    Text("Downloaded Tracks")
+                                        .font(.system(size: 15))
+                                        .foregroundStyle(.white)
+
+                                    Spacer()
+
+                                    Text("\(downloader.downloadedTracks.count)")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(Color.appFaint)
+
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(Color.appGhost)
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 13)
+                            }
+                            .buttonStyle(.plain)
 
                             if !downloader.downloadedTracks.isEmpty {
                                 Divider().background(Color.appBorder).padding(.horizontal, 14)
 
-                                Button(action: {
-                                    for id in Array(downloader.downloadedTracks.keys) {
-                                        downloader.deleteDownload(videoId: id)
-                                    }
-                                }) {
-                                    HStack {
+                                Button(action: { showClearAllConfirm = true }) {
+                                    HStack(spacing: 12) {
                                         Image(systemName: "trash")
-                                            .frame(width: 28)
+                                            .font(.system(size: 13, weight: .semibold))
                                             .foregroundStyle(.red)
+                                            .frame(width: 28, height: 28)
+                                            .background(Color.red.opacity(0.12))
+                                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+
                                         Text("Clear All Downloads")
+                                            .font(.system(size: 15))
                                             .foregroundStyle(.red)
+
                                         Spacer()
                                     }
                                     .padding(.horizontal, 14)
@@ -95,7 +177,7 @@ struct SettingsView: View {
                         SettingsSection(title: "About") {
                             SettingsRow(icon: "waveform", iconColor: Color.ytRed, label: "YTWatch", value: "1.0.0")
                             Divider().background(Color.appBorder).padding(.horizontal, 14)
-                            SettingsRow(icon: "network", iconColor: .teal, label: "Audio Source", value: "Cobalt API")
+                            SettingsRow(icon: "network", iconColor: .teal, label: "Audio Source", value: "YouTube Direct")
                         }
 
                         Text("Audio cookies are stored in Keychain.\nApp is for personal use only.")
@@ -119,6 +201,12 @@ struct SettingsView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Your saved cookies will be removed. You'll need to sign in again to sync playlists.")
+            }
+            .alert("Clear All Downloads?", isPresented: $showClearAllConfirm) {
+                Button("Delete All", role: .destructive) { downloader.deleteAllDownloads() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This will remove \(downloader.downloadedTracks.count) tracks (\(downloader.formattedTotalSize)) from your iPhone and Apple Watch.")
             }
         }
         .preferredColorScheme(.dark)

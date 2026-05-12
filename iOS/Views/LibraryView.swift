@@ -5,6 +5,7 @@ struct LibraryView: View {
     @ObservedObject private var downloader = AudioDownloader.shared
     @ObservedObject private var sync = WatchSyncManager.shared
     @ObservedObject private var client = YTMusicClient.shared
+    @Environment(\.scenePhase) private var scenePhase
     @State private var appeared = false
 
     private var libraryTitle: String {
@@ -25,6 +26,35 @@ struct LibraryView: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 2) {
+                            if downloader.totalQueuedCount > 0 {
+                                DownloadProgressCard()
+                                    .padding(.bottom, 8)
+                                    .transition(.move(edge: .top).combined(with: .opacity))
+                            } else if downloader.hasActiveDownloads {
+                                ActiveDownloadBanner()
+                                    .padding(.bottom, 8)
+                                    .transition(.move(edge: .top).combined(with: .opacity))
+                            }
+
+                            if !sync.transferringTrackIds.isEmpty || sync.pendingSyncCount > 0 || !sync.syncedTrackIds.isEmpty {
+                                WatchSyncBanner()
+                                    .padding(.bottom, 8)
+                                    .transition(.move(edge: .top).combined(with: .opacity))
+                            }
+
+                            if !store.librarySongs.isEmpty {
+                                NavigationLink(destination: PlaylistDetailView(playlist: Playlist(
+                                    id: "FEmusic_liked_videos",
+                                    title: "Library Songs",
+                                    thumbnailURL: nil,
+                                    tracks: store.librarySongs
+                                ))) {
+                                    LibrarySongsCard(count: store.librarySongs.count)
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.bottom, 4)
+                            }
+
                             ForEach(Array(store.playlists.enumerated()), id: \.element.id) { i, playlist in
                                 NavigationLink(destination: PlaylistDetailView(playlist: playlist)) {
                                     PlaylistRow(playlist: playlist)
@@ -43,7 +73,6 @@ struct LibraryView: View {
                         .padding(.top, 8)
                         .padding(.bottom, 32)
                     }
-                    .refreshable { await store.refresh() }
                 }
             }
             .navigationTitle(libraryTitle)
@@ -74,24 +103,34 @@ struct LibraryView: View {
             }
         }
         .preferredColorScheme(.dark)
-        .task { if store.playlists.isEmpty { await store.refresh() } }
-        .onAppear {
-            withAnimation { appeared = true }
+        .task { await store.refresh() }
+        .onAppear { withAnimation { appeared = true } }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await store.refresh() } }
         }
     }
 }
 
 struct PlaylistRow: View {
     let playlist: Playlist
+    // Only observe the specific sets we need — avoids re-render on unrelated changes
     @ObservedObject private var downloader = AudioDownloader.shared
     @ObservedObject private var sync = WatchSyncManager.shared
-    @State private var pressed = false
+
+    private var trackCountText: String {
+        if playlist.tracks.isEmpty, let sub = playlist.subtitle, !sub.isEmpty {
+            return sub
+        }
+        return "\(playlist.trackCount) tracks"
+    }
 
     private var downloadedCount: Int {
-        playlist.tracks.filter { downloader.isDownloaded($0.videoId) }.count
+        guard !playlist.tracks.isEmpty else { return 0 }
+        return playlist.tracks.reduce(0) { $0 + (downloader.downloadedTracks[$1.videoId] != nil ? 1 : 0) }
     }
     private var syncedCount: Int {
-        playlist.tracks.filter { sync.syncedTrackIds.contains($0.videoId) }.count
+        guard !playlist.tracks.isEmpty else { return 0 }
+        return playlist.tracks.reduce(0) { $0 + (sync.syncedTrackIds.contains($1.videoId) ? 1 : 0) }
     }
     private var downloadFraction: Double {
         guard playlist.trackCount > 0 else { return 0 }
@@ -119,7 +158,7 @@ struct PlaylistRow: View {
                     .foregroundStyle(.white)
                     .lineLimit(1)
 
-                Text("\(playlist.trackCount) tracks")
+                Text(trackCountText)
                     .font(.system(size: 12, weight: .regular))
                     .foregroundStyle(Color.appFaint)
 
@@ -159,6 +198,206 @@ struct PlaylistRow: View {
                 .strokeBorder(Color.appBorder, lineWidth: 0.5)
         )
         .padding(.vertical, 2)
+    }
+}
+
+private struct DownloadProgressCard: View {
+    @ObservedObject private var downloader = AudioDownloader.shared
+
+    private var progress: Double {
+        guard downloader.totalQueuedCount > 0 else { return 0 }
+        return Double(downloader.completedInBatch) / Double(downloader.totalQueuedCount)
+    }
+
+    private var etaText: String? {
+        guard let secs = downloader.estimatedSecondsRemaining, secs > 0 else { return nil }
+        if secs < 60 { return "\(Int(secs))s left" }
+        let mins = Int(secs) / 60
+        let remaining = Int(secs) % 60
+        if mins < 2 { return "\(mins)m \(remaining)s left" }
+        return "~\(mins)m left"
+    }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .tint(Color.ytRed)
+                        .scaleEffect(0.7)
+                    Text("Downloading")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                Spacer()
+                Text("\(downloader.completedInBatch)/\(downloader.totalQueuedCount)")
+                    .font(.system(size: 13, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(Color.ytRed)
+            }
+
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.appGhost).frame(height: 4)
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.ytRed.opacity(0.6), Color.ytRed],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: max(8, geo.size.width * progress), height: 4)
+                        .animation(.spring(response: 0.5, dampingFraction: 0.8), value: progress)
+                }
+            }
+            .frame(height: 4)
+
+            if let eta = etaText {
+                HStack {
+                    Spacer()
+                    Text(eta)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.appFaint)
+                }
+            }
+        }
+        .padding(14)
+        .background(Color.appSurface)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.ytRed.opacity(0.2), lineWidth: 0.5)
+        )
+    }
+}
+
+private struct ActiveDownloadBanner: View {
+    @ObservedObject private var downloader = AudioDownloader.shared
+
+    var body: some View {
+        let count = downloader.downloadProgress.filter { $0.value < 1.0 }.count
+        HStack(spacing: 10) {
+            ProgressView()
+                .tint(Color.ytRed)
+                .scaleEffect(0.7)
+            Text("Downloading \(count) track\(count == 1 ? "" : "s")")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white)
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Color.appSurface)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.ytRed.opacity(0.2), lineWidth: 0.5)
+        )
+    }
+}
+
+private struct WatchSyncBanner: View {
+    @ObservedObject private var sync = WatchSyncManager.shared
+
+    private var totalSyncing: Int {
+        sync.transferringTrackIds.count + sync.pendingSyncCount
+    }
+
+    private var syncedCount: Int {
+        sync.syncedTrackIds.count
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                if totalSyncing > 0 {
+                    ProgressView()
+                        .tint(Color.ytRed)
+                        .scaleEffect(0.7)
+                } else {
+                    Image(systemName: "applewatch.radiowaves.left.and.right")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color.ytRed)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    if totalSyncing > 0 {
+                        Text("Syncing to Watch")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.white)
+                        Text("\(totalSyncing) remaining · \(syncedCount) synced")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Color.appFaint)
+                    } else {
+                        Text("\(syncedCount) tracks on Watch")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.white)
+                    }
+                }
+
+                Spacer()
+
+                if totalSyncing > 0 {
+                    Text("Transfers in background")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(Color.appFaint)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Color.appSurface)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.appBorder, lineWidth: 0.5)
+        )
+    }
+}
+
+private struct LibrarySongsCard: View {
+    let count: Int
+    @ObservedObject private var downloader = AudioDownloader.shared
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color(red: 0.3, green: 0.2, blue: 0.7), Color(red: 0.2, green: 0.1, blue: 0.5)],
+                            startPoint: .topLeading, endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 58, height: 58)
+                Image(systemName: "music.note.list")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Library Songs")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text("\(count) songs")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.appFaint)
+            }
+
+            Spacer()
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.appGhost)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Color.appSurface)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.appBorder, lineWidth: 0.5)
+        )
     }
 }
 

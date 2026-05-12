@@ -17,11 +17,16 @@ final class WatchFileReceiver: NSObject, ObservableObject {
             .appendingPathComponent("Audio", isDirectory: true)
     }
 
+    static var thumbnailDirectory: URL {
+        fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Thumbnails", isDirectory: true)
+    }
+
     private static var fm: FileManager { .default }
 
     override init() {
         super.init()
-        createAudioDirectory()
+        createDirectories()
         loadPlaylistsFromDisk()
         if WCSession.isSupported() {
             WCSession.default.delegate = self
@@ -36,8 +41,36 @@ final class WatchFileReceiver: NSObject, ObservableObject {
         return fm.fileExists(atPath: url.path) ? url : nil
     }
 
+    func thumbnailURL(for videoId: String) -> URL? {
+        let url = Self.thumbnailDirectory.appendingPathComponent("\(videoId).jpg")
+        return fm.fileExists(atPath: url.path) ? url : nil
+    }
+
+    func deletePlaylist(_ playlist: Playlist) {
+        // Collect track IDs used by OTHER playlists so we don't delete shared files
+        let otherTrackIds = Set(playlists.filter { $0.id != playlist.id }.flatMap { $0.tracks.map(\.videoId) })
+        for track in playlist.tracks where !otherTrackIds.contains(track.videoId) {
+            let audio = Self.audioDirectory.appendingPathComponent("\(track.videoId).m4a")
+            let thumb = Self.thumbnailDirectory.appendingPathComponent("\(track.videoId).jpg")
+            try? fm.removeItem(at: audio)
+            try? fm.removeItem(at: thumb)
+        }
+        playlists.removeAll { $0.id == playlist.id }
+        savePlaylistsToDisk()
+    }
+
     func isAvailable(_ videoId: String) -> Bool {
         audioURL(for: videoId) != nil
+    }
+
+    func rescanFiles() {
+        let ids = availableTrackIds()
+        let hadTracks = !playlists.flatMap(\.tracks).isEmpty
+        objectWillChange.send()
+        if !hadTracks {
+            loadPlaylistsFromDisk()
+        }
+        _ = ids
     }
 
     func availableTrackIds() -> Set<String> {
@@ -69,8 +102,9 @@ final class WatchFileReceiver: NSObject, ObservableObject {
 
     // MARK: - Private
 
-    private func createAudioDirectory() {
+    private func createDirectories() {
         try? fm.createDirectory(at: Self.audioDirectory, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: Self.thumbnailDirectory, withIntermediateDirectories: true)
     }
 
     private func loadPlaylistsFromDisk() {
@@ -98,6 +132,30 @@ final class WatchFileReceiver: NSObject, ObservableObject {
         }
         savePlaylistsToDisk()
     }
+
+    func deleteTrack(videoId: String) {
+        let audio = Self.audioDirectory.appendingPathComponent("\(videoId).m4a")
+        let thumb = Self.thumbnailDirectory.appendingPathComponent("\(videoId).jpg")
+        try? fm.removeItem(at: audio)
+        try? fm.removeItem(at: thumb)
+        for i in playlists.indices {
+            playlists[i].tracks.removeAll { $0.videoId == videoId }
+        }
+        playlists.removeAll { $0.tracks.isEmpty }
+        savePlaylistsToDisk()
+    }
+
+    func cleanupOrphanedFiles() {
+        let allTrackIds = Set(playlists.flatMap { $0.tracks.map(\.videoId) })
+        let onDisk = availableTrackIds()
+        let orphans = onDisk.subtracting(allTrackIds)
+        for id in orphans {
+            let audioFile = Self.audioDirectory.appendingPathComponent("\(id).m4a")
+            let thumbFile = Self.thumbnailDirectory.appendingPathComponent("\(id).jpg")
+            try? fm.removeItem(at: audioFile)
+            try? fm.removeItem(at: thumbFile)
+        }
+    }
 }
 
 // MARK: - WCSessionDelegate
@@ -106,11 +164,11 @@ extension WatchFileReceiver: WCSessionDelegate {
 
     nonisolated func session(_ session: WCSession, activationDidCompleteWith state: WCSessionActivationState, error: Error?) {}
 
-    // Receive audio file
+    // Receive audio or thumbnail file
     nonisolated func session(_ session: WCSession, didReceive file: WCSessionFile) {
-        // Extract Sendable values before crossing actor boundary
         let fileURL = file.fileURL
         let metaData: Data? = file.metadata.flatMap { try? JSONSerialization.data(withJSONObject: $0) }
+        let isThumbnail = (file.metadata?["isThumbnail"] as? Bool) == true
 
         Task { @MainActor in
             self.receivingCount += 1
@@ -119,14 +177,25 @@ extension WatchFileReceiver: WCSessionDelegate {
             guard let metaData,
                   let transfer = try? JSONDecoder().decode(TrackTransferMetadata.self, from: metaData) else { return }
 
+            if isThumbnail {
+                let thumbDest = Self.thumbnailDirectory.appendingPathComponent("\(transfer.track.videoId).jpg")
+                try? self.fm.removeItem(at: thumbDest)
+                try? self.fm.copyItem(at: fileURL, to: thumbDest)
+                return
+            }
+
             let destURL = Self.audioDirectory.appendingPathComponent("\(transfer.track.videoId).m4a")
             try? self.fm.removeItem(at: destURL)
             try? self.fm.copyItem(at: fileURL, to: destURL)
 
             if var playlist = self.playlists.first(where: { $0.id == transfer.playlistId }) {
                 if !playlist.tracks.contains(where: { $0.videoId == transfer.track.videoId }) {
-                    playlist.tracks.append(transfer.track)
-                    playlist.tracks.sort { $0.id < $1.id }
+                    let idx = transfer.indexInPlaylist
+                    if idx >= 0 && idx <= playlist.tracks.count {
+                        playlist.tracks.insert(transfer.track, at: min(idx, playlist.tracks.count))
+                    } else {
+                        playlist.tracks.append(transfer.track)
+                    }
                 }
                 self.upsertPlaylist(playlist)
             } else {
@@ -141,21 +210,44 @@ extension WatchFileReceiver: WCSessionDelegate {
         }
     }
 
-    // Receive playlist metadata context update
+    nonisolated func session(_ session: WCSession, didReceive message: [String: Any]) {
+        handleIncomingMessage(message)
+    }
+
+    nonisolated func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        handleIncomingMessage(userInfo)
+    }
+
+    private nonisolated func handleIncomingMessage(_ msg: [String: Any]) {
+        let typeStr = msg[WatchMessageKey.type.rawValue] as? String
+        let videoId = msg["videoId"] as? String
+        Task { @MainActor in
+            guard let typeStr, let type = WatchMessageType(rawValue: typeStr) else { return }
+            if type == .deleteTrack, let videoId {
+                self.deleteTrack(videoId: videoId)
+            }
+        }
+    }
+
     nonisolated func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
-        // Extract Sendable values before crossing actor boundary
         let typeStr = applicationContext[WatchMessageKey.type.rawValue] as? String
         let b64 = applicationContext[WatchMessageKey.payload.rawValue] as? String
+        let videoId = applicationContext["videoId"] as? String
 
         Task { @MainActor in
-            guard let typeStr,
-                  let type = WatchMessageType(rawValue: typeStr),
-                  type == .playlistIndex,
-                  let b64,
-                  let data = Data(base64Encoded: b64),
-                  let playlist = try? JSONDecoder().decode(Playlist.self, from: data) else { return }
+            guard let typeStr, let type = WatchMessageType(rawValue: typeStr) else { return }
 
-            self.upsertPlaylist(playlist)
+            switch type {
+            case .playlistIndex:
+                guard let b64, let data = Data(base64Encoded: b64),
+                      let playlist = try? JSONDecoder().decode(Playlist.self, from: data) else { return }
+                self.upsertPlaylist(playlist)
+                self.cleanupOrphanedFiles()
+            case .deleteTrack:
+                if let videoId { self.deleteTrack(videoId: videoId) }
+            default:
+                break
+            }
         }
     }
 }

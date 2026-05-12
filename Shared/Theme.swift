@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - Color System
 
@@ -98,23 +99,55 @@ struct StatusBadge: View {
     }
 }
 
+// Thread-safe in-memory image cache to avoid re-downloading and re-decoding thumbnails.
+final class ThumbnailCache: @unchecked Sendable {
+    static let shared = ThumbnailCache()
+    private let cache: NSCache<NSString, UIImage> = {
+        let c = NSCache<NSString, UIImage>()
+        c.totalCostLimit = 40 * 1024 * 1024  // 40 MB
+        c.countLimit = 250
+        return c
+    }()
+
+    func get(_ url: String) -> UIImage? { cache.object(forKey: url as NSString) }
+    func set(_ image: UIImage, for url: String) {
+        let cost = Int(image.size.width * image.size.height * 4)
+        cache.setObject(image, forKey: url as NSString, cost: cost)
+    }
+}
+
 struct ThumbnailView: View {
     let url: String?
     var size: CGFloat = 52
     var cornerRadius: CGFloat = 8
 
+    @State private var image: UIImage? = nil
+
     var body: some View {
-        AsyncImage(url: URL(string: url ?? "")) { img in
-            img.resizable().scaledToFill()
-        } placeholder: {
-            ZStack {
-                Color.appElevated
-                Image(systemName: "music.note")
-                    .font(.system(size: size * 0.3, weight: .light))
-                    .foregroundStyle(Color.appFaint)
+        Group {
+            if let img = image {
+                Image(uiImage: img)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                ZStack {
+                    Color.appElevated
+                    Image(systemName: "music.note")
+                        .font(.system(size: size * 0.3, weight: .light))
+                        .foregroundStyle(Color.appFaint)
+                }
             }
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .task(id: url) {
+            guard let urlStr = url, !urlStr.isEmpty else { return }
+            if let cached = ThumbnailCache.shared.get(urlStr) { image = cached; return }
+            guard let request = URL(string: urlStr),
+                  let (data, _) = try? await URLSession.shared.data(from: request),
+                  let decoded = UIImage(data: data) else { return }
+            ThumbnailCache.shared.set(decoded, for: urlStr)
+            image = decoded
+        }
     }
 }

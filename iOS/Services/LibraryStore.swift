@@ -1,12 +1,12 @@
 import Foundation
 
-// Caches fetched playlists to disk so they survive app restarts.
 @MainActor
 final class LibraryStore: ObservableObject {
 
     static let shared = LibraryStore()
 
     @Published var playlists: [Playlist] = []
+    @Published var librarySongs: [Track] = []
     @Published var isLoading = false
     @Published var error: String?
 
@@ -20,27 +20,86 @@ final class LibraryStore: ObservableObject {
         guard YTMusicClient.shared.isAuthenticated, !isLoading else { return }
         isLoading = true
         error = nil
+        async let songsTask: Void = fetchLibrarySongs()
         do {
-            var fetched = try await YTMusicClient.shared.fetchLibraryPlaylists()
-            // Fetch tracks for each playlist in parallel (batched)
-            fetched = try await withThrowingTaskGroup(of: Playlist.self) { group in
-                for playlist in fetched {
-                    group.addTask {
-                        var p = playlist
-                        p.tracks = (try? await YTMusicClient.shared.fetchPlaylistTracks(playlistId: p.id)) ?? []
-                        return p
-                    }
+            let shells = try await YTMusicClient.shared.fetchLibraryPlaylists()
+            playlists = shells.map { shell in
+                if let cached = playlists.first(where: { $0.id == shell.id }), !cached.tracks.isEmpty {
+                    var merged = shell
+                    merged.tracks = cached.tracks
+                    return merged
                 }
-                var result: [Playlist] = []
-                for try await p in group { result.append(p) }
-                return result.sorted { $0.title < $1.title }
+                return shell
             }
-            playlists = fetched
-            saveToDisk()
+            isLoading = false
+            await fetchTracksInBackground(for: shells)
+        } catch is CancellationError {
+            isLoading = false
         } catch {
             self.error = error.localizedDescription
+            isLoading = false
         }
-        isLoading = false
+        _ = await songsTask
+    }
+
+    private func fetchLibrarySongs() async {
+        librarySongs = (try? await YTMusicClient.shared.fetchLibrarySongs()) ?? []
+    }
+
+    private func fetchTracksInBackground(for shells: [Playlist]) async {
+        var updated = playlists
+        let maxConcurrent = 4
+        var playlistsToAutoUpdate: [(Playlist, [Track])] = []
+
+        await withTaskGroup(of: (String, [Track]).self) { group in
+            for (i, playlist) in shells.enumerated() {
+                if i >= maxConcurrent { _ = await group.next() }
+                group.addTask {
+                    let tracks = (try? await YTMusicClient.shared.fetchPlaylistTracks(playlistId: playlist.id)) ?? []
+                    return (playlist.id, tracks)
+                }
+            }
+            for await (id, tracks) in group {
+                if let idx = updated.firstIndex(where: { $0.id == id }) {
+                    let oldTracks = updated[idx].tracks
+                    updated[idx].tracks = tracks
+                    playlists = updated
+
+                    let downloader = AudioDownloader.shared
+                    let hasDownloads = oldTracks.contains { downloader.isDownloaded($0.videoId) }
+                    if hasDownloads {
+                        let newTracks = tracks.filter { t in
+                            !oldTracks.contains(where: { $0.videoId == t.videoId }) && !downloader.isDownloaded(t.videoId)
+                        }
+                        if !newTracks.isEmpty {
+                            playlistsToAutoUpdate.append((updated[idx], newTracks))
+                        }
+                    }
+                }
+            }
+        }
+        playlists = updated.sorted { $0.title < $1.title }
+        saveToDisk()
+
+        for (playlist, newTracks) in playlistsToAutoUpdate {
+            await autoDownloadNewTracks(newTracks, playlist: playlist)
+        }
+    }
+
+    private func autoDownloadNewTracks(_ tracks: [Track], playlist: Playlist) async {
+        print("[Library] Auto-downloading \(tracks.count) new tracks for \(playlist.title)")
+
+        await withTaskGroup(of: Void.self) { group in
+            for track in tracks {
+                group.addTask {
+                    _ = try? await AudioDownloader.shared.download(track: track, playlistId: playlist.id, playlistTitle: playlist.title)
+                }
+            }
+        }
+
+        if WatchSyncManager.shared.isAvailable {
+            WatchSyncManager.shared.syncPlaylist(playlist)
+        }
     }
 
     private func saveToDisk() {

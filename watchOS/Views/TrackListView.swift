@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct TrackListView: View {
     let playlist: Playlist
@@ -10,6 +11,30 @@ struct TrackListView: View {
 
             ScrollView {
                 VStack(spacing: 4) {
+                    // Shuffle All
+                    Button(action: {
+                        guard !playlist.tracks.isEmpty else { return }
+                        player.load(playlist: playlist, startAt: Int.random(in: 0..<playlist.tracks.count))
+                        if !player.isShuffled { player.toggleShuffle() }
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "shuffle")
+                                .font(.system(size: 10, weight: .bold))
+                            Text("Shuffle All")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .foregroundStyle(Color.ytRed)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(Color.ytRed.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(Color.ytRed.opacity(0.25), lineWidth: 0.5)
+                        )
+                    }
+                    .buttonStyle(.plain)
+
                     ForEach(Array(playlist.tracks.enumerated()), id: \.element.id) { index, track in
                         Button(action: { player.load(playlist: playlist, startAt: index) }) {
                             WatchTrackRow(
@@ -23,7 +48,7 @@ struct TrackListView: View {
                     // Open now playing if something is playing from this playlist
                     if let current = player.currentTrack,
                        playlist.tracks.contains(where: { $0.id == current.id }) {
-                        NavigationLink(destination: NowPlayingView()) {
+                        NavigationLink(destination: NowPlayingScreen()) {
                             HStack(spacing: 6) {
                                 Image(systemName: "waveform")
                                     .font(.system(size: 10, weight: .bold))
@@ -58,20 +83,36 @@ private struct WatchTrackRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            // Active indicator
-            ZStack {
+            ZStack(alignment: .center) {
+                if let url = WatchFileReceiver.shared.thumbnailURL(for: track.videoId),
+                   let data = try? Data(contentsOf: url),
+                   let img = UIImage(data: data) {
+                    Image(uiImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 32, height: 32)
+                        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                } else {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color(white: 0.15))
+                        .frame(width: 32, height: 32)
+                        .overlay(
+                            Image(systemName: "music.note")
+                                .font(.system(size: 10, weight: .light))
+                                .foregroundStyle(Color(white: 0.3))
+                        )
+                }
+
                 if isActive {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color.black.opacity(0.5))
+                        .frame(width: 32, height: 32)
                     Image(systemName: "waveform")
-                        .font(.system(size: 9, weight: .bold))
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(Color.ytRed)
                         .symbolEffect(.variableColor.iterative, isActive: player.isPlaying)
-                } else {
-                    Circle()
-                        .fill(Color(white: 0.2))
-                        .frame(width: 4, height: 4)
                 }
             }
-            .frame(width: 14)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
