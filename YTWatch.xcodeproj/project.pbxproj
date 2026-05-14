@@ -39,6 +39,8 @@
 		FCD80C55BBDAC570776EEEF5 /* ForYouView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 557111319ED3FF3B6D01FB88 /* ForYouView.swift */; };
 		E1A2B3C4D5E6F7081234ABCD /* ExploreView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1B2C3D4E5F60718ABCD1234 /* ExploreView.swift */; };
 		A1B2C3D4E5F60718DEAD0001 /* ArtistView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718DEAD0002 /* ArtistView.swift */; };
+		AA11BB22CC33DD44EE550001 /* SleepTimerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11BB22CC33DD44EE550002 /* SleepTimerView.swift */; };
+		AA11BB22CC33DD44EE550003 /* StorageManagementView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA11BB22CC33DD44EE550004 /* StorageManagementView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -96,6 +98,8 @@
 		EA352555C26B7179E80D5BC8 /* YTWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YTWatchApp.swift; sourceTree = "<group>"; };
 		EB555F2F815A575FA1F0D4C3 /* YTWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = YTWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F1B2C3D4E5F60718ABCD1234 /* ExploreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExploreView.swift; sourceTree = "<group>"; };
+		AA11BB22CC33DD44EE550002 /* SleepTimerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SleepTimerView.swift; sourceTree = "<group>"; };
+		AA11BB22CC33DD44EE550004 /* StorageManagementView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageManagementView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -225,6 +229,8 @@
 			children = (
 				64C6D2A2D7CEEBABB42D57F8 /* NowPlayingView.swift */,
 				09A4619D2E2FEA88BB78ED91 /* PlaylistListView.swift */,
+				AA11BB22CC33DD44EE550002 /* SleepTimerView.swift */,
+				AA11BB22CC33DD44EE550004 /* StorageManagementView.swift */,
 				4580F7CA038CF86CA4DBA2FB /* TrackListView.swift */,
 			);
 			path = Views;
@@ -351,6 +357,8 @@
 				B055738BF39CB16E101B2034 /* WatchFileReceiver.swift in Sources */,
 				E36C4C61022C96340669558F /* WatchMessage.swift in Sources */,
 				72BDE1E56AE58BF3BC435F96 /* WatchPlayer.swift in Sources */,
+				AA11BB22CC33DD44EE550001 /* SleepTimerView.swift in Sources */,
+				AA11BB22CC33DD44EE550003 /* StorageManagementView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

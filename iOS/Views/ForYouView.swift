@@ -53,7 +53,6 @@ final class ForYouStore: ObservableObject {
 struct ForYouView: View {
     @ObservedObject private var store = ForYouStore.shared
     @ObservedObject private var client = YTMusicClient.shared
-    @Environment(\.scenePhase) private var scenePhase
     @State private var appeared = false
     @State private var radioTrack: Track?
     @State private var albumTarget: Playlist?
@@ -70,6 +69,7 @@ struct ForYouView: View {
                 } else {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 28) {
+                            // Liked Songs card
                             if let liked = store.likedSongs {
                                 VStack(alignment: .leading, spacing: 10) {
                                     Text("Your Music")
@@ -85,6 +85,35 @@ struct ForYouView: View {
                                 .offset(y: appeared ? 0 : 10)
                             }
 
+                            // Album/playlist sections first (For You, Listen Again, etc.)
+                            ForEach(Array(store.sections.filter { !$0.playlists.isEmpty }.enumerated()), id: \.element.id) { sectionIdx, section in
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text(section.title)
+                                        .sectionHeader()
+                                        .padding(.horizontal, 4)
+
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        LazyHStack(spacing: 12) {
+                                            ForEach(section.playlists) { playlist in
+                                                NavigationLink(destination: PlaylistDetailView(playlist: playlist)) {
+                                                    PlaylistCard(playlist: playlist)
+                                                }
+                                                .buttonStyle(.plain)
+                                            }
+                                        }
+                                        .padding(.horizontal, 2)
+                                    }
+                                }
+                                .opacity(appeared ? 1 : 0)
+                                .offset(y: appeared ? 0 : 10)
+                                .animation(
+                                    .spring(response: 0.45, dampingFraction: 0.82)
+                                        .delay(0.08 + Double(sectionIdx) * 0.04),
+                                    value: appeared
+                                )
+                            }
+
+                            // Recently Played tracks
                             if !store.recentlyPlayed.isEmpty {
                                 VStack(alignment: .leading, spacing: 10) {
                                     Text("Recently Played")
@@ -110,41 +139,26 @@ struct ForYouView: View {
                                 .offset(y: appeared ? 0 : 10)
                             }
 
-                            ForEach(Array(store.sections.enumerated()), id: \.element.id) { sectionIdx, section in
+                            // Track-only sections after
+                            ForEach(Array(store.sections.filter { $0.playlists.isEmpty && !$0.tracks.isEmpty }.enumerated()), id: \.element.id) { sectionIdx, section in
                                 VStack(alignment: .leading, spacing: 10) {
                                     Text(section.title)
                                         .sectionHeader()
                                         .padding(.horizontal, 4)
 
-                                    if !section.playlists.isEmpty {
-                                        ScrollView(.horizontal, showsIndicators: false) {
-                                            LazyHStack(spacing: 12) {
-                                                ForEach(section.playlists) { playlist in
-                                                    NavigationLink(destination: PlaylistDetailView(playlist: playlist)) {
-                                                        PlaylistCard(playlist: playlist)
-                                                    }
-                                                    .buttonStyle(.plain)
-                                                }
-                                            }
-                                            .padding(.horizontal, 2)
-                                        }
-                                    }
-
-                                    if !section.tracks.isEmpty {
-                                        ForEach(Array(section.tracks.enumerated()), id: \.element.id) { i, track in
-                                            ForYouTrackRow(track: track, onStartRadio: { radioTrack = $0 }, onNavigateToArtist: { id, name in
+                                    ForEach(Array(section.tracks.enumerated()), id: \.element.id) { i, track in
+                                        ForYouTrackRow(track: track, onStartRadio: { radioTrack = $0 }, onNavigateToArtist: { id, name in
                                             artistTarget = (id, name)
                                         }, onNavigateToAlbum: { id, title, thumb in
                                             albumTarget = Playlist(id: id, title: title ?? "Album", thumbnailURL: thumb, tracks: [])
                                         })
-                                                .opacity(appeared ? 1 : 0)
-                                                .offset(y: appeared ? 0 : 8)
-                                                .animation(
-                                                    .spring(response: 0.4, dampingFraction: 0.82)
-                                                        .delay(0.05 + Double(i) * 0.025),
-                                                    value: appeared
-                                                )
-                                        }
+                                            .opacity(appeared ? 1 : 0)
+                                            .offset(y: appeared ? 0 : 8)
+                                            .animation(
+                                                .spring(response: 0.4, dampingFraction: 0.82)
+                                                    .delay(0.05 + Double(i) * 0.025),
+                                                value: appeared
+                                            )
                                     }
                                 }
                                 .opacity(appeared ? 1 : 0)
@@ -224,9 +238,6 @@ struct ForYouView: View {
             withAnimation(.spring(response: 0.5, dampingFraction: 0.8).delay(0.05)) {
                 appeared = true
             }
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await store.refresh() } }
         }
     }
 

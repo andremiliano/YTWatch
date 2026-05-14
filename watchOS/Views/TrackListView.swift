@@ -1,9 +1,35 @@
 import SwiftUI
 import UIKit
 
+// MARK: - Watch Thumbnail Cache
+
+@MainActor
+final class WatchThumbnailCache {
+    static let shared = WatchThumbnailCache()
+    private var cache: [String: UIImage] = [:]
+    private let maxEntries = 80
+
+    func image(for videoId: String) -> UIImage? {
+        if let cached = cache[videoId] { return cached }
+        guard let url = WatchFileReceiver.shared.thumbnailURL(for: videoId),
+              let data = try? Data(contentsOf: url),
+              let img = UIImage(data: data) else { return nil }
+        if cache.count >= maxEntries {
+            // Evict oldest (approximation — just drop half)
+            let keys = Array(cache.keys.prefix(maxEntries / 2))
+            for k in keys { cache.removeValue(forKey: k) }
+        }
+        cache[videoId] = img
+        return img
+    }
+
+    func clear() { cache.removeAll() }
+}
+
 struct TrackListView: View {
     let playlist: Playlist
     @ObservedObject private var player = WatchPlayer.shared
+    @State private var showNowPlaying = false
 
     var body: some View {
         ZStack {
@@ -16,6 +42,7 @@ struct TrackListView: View {
                         guard !playlist.tracks.isEmpty else { return }
                         player.load(playlist: playlist, startAt: Int.random(in: 0..<playlist.tracks.count))
                         if !player.isShuffled { player.toggleShuffle() }
+                        showNowPlaying = true
                     }) {
                         HStack(spacing: 6) {
                             Image(systemName: "shuffle")
@@ -36,7 +63,10 @@ struct TrackListView: View {
                     .buttonStyle(.plain)
 
                     ForEach(Array(playlist.tracks.enumerated()), id: \.element.id) { index, track in
-                        Button(action: { player.load(playlist: playlist, startAt: index) }) {
+                        Button(action: {
+                            player.load(playlist: playlist, startAt: index)
+                            showNowPlaying = true
+                        }) {
                             WatchTrackRow(
                                 track: track,
                                 isActive: player.currentTrack?.id == track.id
@@ -65,6 +95,26 @@ struct TrackListView: View {
                         }
                         .buttonStyle(.plain)
                         .padding(.top, 4)
+
+                        // Up Next queue
+                        let upcoming = player.upNextTracks
+                        if !upcoming.isEmpty {
+                            HStack {
+                                Text("UP NEXT")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(Color(white: 0.35))
+                                Spacer()
+                                Text("\(upcoming.count) tracks")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(Color(white: 0.25))
+                            }
+                            .padding(.horizontal, 4)
+                            .padding(.top, 8)
+
+                            ForEach(Array(upcoming.prefix(10).enumerated()), id: \.element.videoId) { _, track in
+                                UpNextRow(track: track)
+                            }
+                        }
                     }
                 }
                 .padding(.horizontal, 8)
@@ -73,6 +123,9 @@ struct TrackListView: View {
         }
         .navigationTitle(playlist.title)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(isPresented: $showNowPlaying) {
+            NowPlayingScreen()
+        }
     }
 }
 
@@ -84,9 +137,7 @@ private struct WatchTrackRow: View {
     var body: some View {
         HStack(spacing: 8) {
             ZStack(alignment: .center) {
-                if let url = WatchFileReceiver.shared.thumbnailURL(for: track.videoId),
-                   let data = try? Data(contentsOf: url),
-                   let img = UIImage(data: data) {
+                if let img = WatchThumbnailCache.shared.image(for: track.videoId) {
                     Image(uiImage: img)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
@@ -140,5 +191,40 @@ private struct WatchTrackRow: View {
                 .strokeBorder(isActive ? Color.ytRed.opacity(0.3) : Color.clear, lineWidth: 0.5)
         )
         .animation(.easeOut(duration: 0.2), value: isActive)
+    }
+}
+
+private struct UpNextRow: View {
+    let track: Track
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let img = WatchThumbnailCache.shared.image(for: track.videoId) {
+                Image(uiImage: img)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 24, height: 24)
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+            } else {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color(white: 0.12))
+                    .frame(width: 24, height: 24)
+            }
+
+            Text(track.title)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Color(white: 0.5))
+                .lineLimit(1)
+
+            Spacer()
+
+            Text(track.durationFormatted)
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundStyle(Color(white: 0.2))
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(Color(white: 0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }

@@ -12,11 +12,25 @@ final class WatchSyncManager: NSObject, ObservableObject {
     @Published var transferringTrackIds: Set<String> = []
     @Published var syncedPlaylists: [Playlist] = []
     @Published var pendingSyncCount = 0
+    @Published var isVerifying = false
+    @Published var lastVerifyResult: VerifyResult?
+
+    struct VerifyResult {
+        let phoneThinksSynced: Int
+        let actuallyOnWatch: Int
+        let missingOnWatch: Int
+        let resynced: Int
+        let date: Date
+    }
 
     private var session: WCSession?
     private var pendingTransfers: [String: WCSessionFileTransfer] = [:]
     private var pendingSyncQueue: [PendingSyncItem] = []
     private var hadActiveSyncs = false
+    /// Tracks waiting for WiFi download result — keyed by videoId, task fires Bluetooth fallback after timeout
+    private var wifiTimeoutTasks: [String: Task<Void, Never>] = [:]
+    /// VideoIds that failed WiFi download — forces Bluetooth path until next reachability change
+    private var wifiFailedVideoIds: Set<String> = []
 
     struct PendingSyncItem: Codable {
         let videoId: String
@@ -77,7 +91,8 @@ final class WatchSyncManager: NSObject, ObservableObject {
             if let meta = AudioDownloader.shared.trackMetadata[videoId] {
                 let item = PendingSyncItem(
                     videoId: videoId, title: meta.title, artist: meta.artist,
-                    album: nil, durationSeconds: 0, thumbnailURL: meta.thumbnailURL,
+                    album: meta.album, durationSeconds: meta.durationSeconds,
+                    thumbnailURL: meta.thumbnailURL,
                     playlistId: "library", playlistTitle: "Downloads"
                 )
                 pendingSyncQueue.append(item)
@@ -139,33 +154,155 @@ final class WatchSyncManager: NSObject, ObservableObject {
         session.transferUserInfo(msg)
     }
 
+    /// Asks Watch what tracks it actually has, fixes sync state, re-syncs missing tracks.
+    func verifySyncAndRepair() {
+        guard let session, session.activationState == .activated, session.isReachable else {
+            print("[Sync] Watch not reachable for verify")
+            return
+        }
+        guard !isVerifying else { return }
+        isVerifying = true
+
+        let msg: [String: Any] = [
+            WatchMessageKey.type.rawValue: WatchMessageType.syncVerify.rawValue
+        ]
+
+        session.sendMessage(msg, replyHandler: { [weak self] reply in
+            Task { @MainActor in
+                guard let self else { return }
+                self.handleSyncInventory(reply)
+            }
+        }, errorHandler: { [weak self] error in
+            Task { @MainActor in
+                guard let self else { return }
+                self.isVerifying = false
+                print("[Sync] Verify failed: \(error.localizedDescription)")
+            }
+        })
+    }
+
+    /// Process Watch inventory response — fix state and re-sync missing tracks.
+    private func handleSyncInventory(_ msg: [String: Any]) {
+        guard let watchIds = msg["trackIds"] as? [String] else {
+            isVerifying = false
+            return
+        }
+
+        let watchSet = Set(watchIds)
+        let phoneThinksSynced = syncedTrackIds.count
+
+        // 1. Remove from syncedTrackIds anything Watch doesn't have
+        let falseSynced = syncedTrackIds.subtracting(watchSet)
+        for id in falseSynced {
+            syncedTrackIds.remove(id)
+        }
+
+        // 2. Add to syncedTrackIds anything Watch has that we forgot about
+        let untracked = watchSet.subtracting(syncedTrackIds)
+        for id in untracked {
+            syncedTrackIds.insert(id)
+        }
+        saveSyncState()
+
+        // 3. Re-sync ALL missing tracks that we have locally
+        //    Build a lookup: videoId → (playlistId, playlistTitle) from syncedPlaylists
+        var trackPlaylistMap: [String: (playlistId: String, playlistTitle: String)] = [:]
+        for playlist in syncedPlaylists {
+            for track in playlist.tracks {
+                trackPlaylistMap[track.videoId] = (playlist.id, playlist.title)
+            }
+        }
+
+        var resynced = 0
+        var alreadyQueued = Set(pendingSyncQueue.map(\.videoId))
+
+        for videoId in falseSynced {
+            // Must have the file on iPhone to re-sync
+            guard AudioDownloader.shared.localURL(for: videoId) != nil else { continue }
+            // Don't double-queue
+            guard !alreadyQueued.contains(videoId) else { continue }
+            guard !transferringTrackIds.contains(videoId) else { continue }
+
+            // Get track metadata — try syncedPlaylists first, then trackMetadata fallback
+            let item: PendingSyncItem
+            if let playlistInfo = trackPlaylistMap[videoId],
+               let track = syncedPlaylists
+                .first(where: { $0.id == playlistInfo.playlistId })?
+                .tracks.first(where: { $0.videoId == videoId }) {
+                // Full Track data from synced playlist
+                item = PendingSyncItem(
+                    videoId: videoId, title: track.title, artist: track.artist,
+                    album: track.album, durationSeconds: track.durationSeconds,
+                    thumbnailURL: track.thumbnailURL,
+                    playlistId: playlistInfo.playlistId, playlistTitle: playlistInfo.playlistTitle
+                )
+            } else if let meta = AudioDownloader.shared.trackMetadata[videoId] {
+                // Fallback: track was auto-synced, not in any synced playlist
+                // Find which playlist it belongs to (if any)
+                let pid = trackPlaylistMap[videoId]?.playlistId ?? "library"
+                let ptitle = trackPlaylistMap[videoId]?.playlistTitle ?? "Downloads"
+                item = PendingSyncItem(
+                    videoId: videoId, title: meta.title, artist: meta.artist,
+                    album: meta.album, durationSeconds: meta.durationSeconds,
+                    thumbnailURL: meta.thumbnailURL,
+                    playlistId: pid, playlistTitle: ptitle
+                )
+            } else {
+                // No metadata at all — skip (can't construct proper Track)
+                print("[Sync] Verify: no metadata for \(videoId), skipping re-sync")
+                continue
+            }
+
+            pendingSyncQueue.append(item)
+            alreadyQueued.insert(videoId)
+            resynced += 1
+        }
+        savePendingQueue()
+
+        let result = VerifyResult(
+            phoneThinksSynced: phoneThinksSynced,
+            actuallyOnWatch: watchSet.count,
+            missingOnWatch: falseSynced.count,
+            resynced: resynced,
+            date: Date()
+        )
+        lastVerifyResult = result
+        isVerifying = false
+
+        print("[Sync] Verify: phone=\(phoneThinksSynced) watch=\(watchSet.count) missing=\(falseSynced.count) resyncing=\(resynced)")
+
+        // Push updated playlist indexes so Watch has correct metadata
+        pushAllPlaylistIndexes()
+
+        // Start re-syncing missing tracks
+        if resynced > 0 {
+            drainPendingQueue()
+        }
+    }
+
     // MARK: - Private
 
     private func drainPendingQueue() {
         guard isAvailable else { return }
-        var remaining: [PendingSyncItem] = []
-        var toSync: [(track: Track, url: URL, playlistId: String, playlistTitle: String)] = []
 
-        for item in pendingSyncQueue {
-            guard !syncedTrackIds.contains(item.videoId) else { continue }
-            guard !transferringTrackIds.contains(item.videoId) else {
-                remaining.append(item)
-                continue
-            }
-            guard let localURL = AudioDownloader.shared.localURL(for: item.videoId) else {
-                remaining.append(item)
-                continue
-            }
+        // Clean already-synced items from queue (single source of truth)
+        let beforeCount = pendingSyncQueue.count
+        pendingSyncQueue.removeAll { syncedTrackIds.contains($0.videoId) }
+        if pendingSyncQueue.count != beforeCount { savePendingQueue() }
+
+        // Build transfer list — items STAY in queue until confirmed synced
+        var toSync: [(track: Track, url: URL, playlistId: String, playlistTitle: String, index: Int)] = []
+
+        for (i, item) in pendingSyncQueue.enumerated() {
+            guard !transferringTrackIds.contains(item.videoId) else { continue }
+            guard let localURL = AudioDownloader.shared.localURL(for: item.videoId) else { continue }
             let track = Track(
                 id: item.videoId, videoId: item.videoId, title: item.title,
                 artist: item.artist, album: item.album,
                 durationSeconds: item.durationSeconds, thumbnailURL: item.thumbnailURL
             )
-            toSync.append((track, localURL, item.playlistId, item.playlistTitle))
+            toSync.append((track, localURL, item.playlistId, item.playlistTitle, i))
         }
-
-        pendingSyncQueue = remaining
-        savePendingQueue()
 
         guard !toSync.isEmpty else { return }
 
@@ -174,9 +311,149 @@ final class WatchSyncManager: NSObject, ObservableObject {
         }
         hadActiveSyncs = true
 
+        // Split: WiFi-failed tracks always go Bluetooth; rest try WiFi if Watch reachable
+        let watchReachable = session?.isReachable == true
+        if watchReachable {
+            var wifiItems: [(track: Track, url: URL, playlistId: String, playlistTitle: String, index: Int)] = []
+            var btItems: [(track: Track, url: URL, playlistId: String, playlistTitle: String, index: Int)] = []
+            for item in toSync {
+                if wifiFailedVideoIds.contains(item.track.videoId) {
+                    btItems.append(item)
+                } else {
+                    wifiItems.append(item)
+                }
+            }
+            if !wifiItems.isEmpty { syncViaDirectDownload(wifiItems) }
+            if !btItems.isEmpty { syncViaTransferFile(btItems) }
+        } else {
+            syncViaTransferFile(toSync)
+        }
+    }
+
+    /// Fast path: resolve stream URLs and tell Watch to download directly over WiFi.
+    /// Falls back to transferFile for any track that fails URL resolution or sendMessage.
+    /// Each sent track gets a 120s timeout — if Watch doesn't respond, falls back to Bluetooth.
+    private func syncViaDirectDownload(_ items: [(track: Track, url: URL, playlistId: String, playlistTitle: String, index: Int)]) {
+        guard let session else {
+            syncViaTransferFile(items)
+            return
+        }
+
+        Task {
+            var fallback: [(track: Track, url: URL, playlistId: String, playlistTitle: String, index: Int)] = []
+
+            // Resolve URLs with bounded concurrency (avoid rate limiting)
+            await withTaskGroup(of: (Int, URL?).self) { group in
+                var pending = items.enumerated().makeIterator()
+
+                // Launch first batch (max 3 concurrent)
+                for _ in 0..<3 {
+                    guard let (idx, item) = pending.next() else { break }
+                    group.addTask {
+                        let url = try? await YTMusicClient.shared.fetchAudioStreamURL(videoId: item.track.videoId)
+                        return (idx, url)
+                    }
+                }
+
+                for await (idx, streamURL) in group {
+                    let item = items[idx]
+                    if let streamURL {
+                        let request = AudioDownloader.buildStreamRequest(streamURL: streamURL)
+                        var headers: [String: String] = [:]
+                        for (key, value) in request.allHTTPHeaderFields ?? [:] {
+                            headers[key] = value
+                        }
+
+                        let payload = DirectDownloadPayload(
+                            track: item.track,
+                            playlistId: item.playlistId,
+                            playlistTitle: item.playlistTitle,
+                            indexInPlaylist: item.index,
+                            streamURL: streamURL.absoluteString,
+                            headers: headers,
+                            thumbnailDownloadURL: item.track.thumbnailURL
+                        )
+
+                        if let data = try? JSONEncoder().encode(payload) {
+                            let msg: [String: Any] = [
+                                WatchMessageKey.type.rawValue: WatchMessageType.directDownload.rawValue,
+                                WatchMessageKey.payload.rawValue: data.base64EncodedString()
+                            ]
+                            let videoId = item.track.videoId
+                            session.sendMessage(msg, replyHandler: nil) { [weak self] error in
+                                // sendMessage failed → mark WiFi-failed, remove from transferring, re-drain picks up via Bluetooth
+                                print("[Sync] sendMessage failed for \(videoId): \(error.localizedDescription)")
+                                Task { @MainActor in
+                                    guard let self else { return }
+                                    self.cancelWifiTimeout(for: videoId)
+                                    self.wifiFailedVideoIds.insert(videoId)
+                                    self.transferringTrackIds.remove(videoId)
+                                    self.drainPendingQueue()
+                                }
+                            }
+                            // Start timeout — if Watch doesn't respond in 120s, fall back to Bluetooth
+                            startWifiTimeout(for: videoId)
+                            print("[Sync] → WiFi download \(item.track.title)")
+                        } else {
+                            fallback.append(item)
+                        }
+                    } else {
+                        // URL resolution failed — fall back to Bluetooth transfer
+                        fallback.append(item)
+                    }
+
+                    // Launch next item
+                    if let (nextIdx, nextItem) = pending.next() {
+                        group.addTask {
+                            let url = try? await YTMusicClient.shared.fetchAudioStreamURL(videoId: nextItem.track.videoId)
+                            return (nextIdx, url)
+                        }
+                    }
+                }
+            }
+
+            // Transfer any URL-resolution failures via Bluetooth
+            if !fallback.isEmpty {
+                print("[Sync] Falling back to Bluetooth for \(fallback.count) tracks")
+                syncViaTransferFile(fallback)
+            }
+        }
+    }
+
+    // MARK: - WiFi Download Timeout
+
+    private func startWifiTimeout(for videoId: String) {
+        wifiTimeoutTasks[videoId]?.cancel()
+        wifiTimeoutTasks[videoId] = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 120_000_000_000) // 120 seconds
+            guard !Task.isCancelled else { return }
+            guard let self else { return }
+            // Still waiting? → fall back to Bluetooth
+            guard self.transferringTrackIds.contains(videoId),
+                  !self.syncedTrackIds.contains(videoId) else { return }
+            print("[Sync] WiFi download timeout: \(videoId) — falling back to Bluetooth")
+            self.wifiFailedVideoIds.insert(videoId)
+            self.transferringTrackIds.remove(videoId)
+            self.drainPendingQueue()
+        }
+    }
+
+    private func cancelWifiTimeout(for videoId: String) {
+        wifiTimeoutTasks[videoId]?.cancel()
+        wifiTimeoutTasks.removeValue(forKey: videoId)
+    }
+
+    private func cancelAllWifiTimeouts() {
+        for (_, task) in wifiTimeoutTasks { task.cancel() }
+        wifiTimeoutTasks.removeAll()
+    }
+
+    /// Slow path: transfer files over Bluetooth via WCSession.transferFile
+    private func syncViaTransferFile(_ items: [(track: Track, url: URL, playlistId: String, playlistTitle: String, index: Int)]) {
         Task.detached {
+            // Download thumbnails first
             await withTaskGroup(of: Void.self) { group in
-                for item in toSync {
+                for item in items {
                     group.addTask {
                         if let thumbStr = item.track.thumbnailURL, let thumbURL = URL(string: thumbStr) {
                             await Self.downloadThumbnailBackground(from: thumbURL, videoId: item.track.videoId)
@@ -184,10 +461,10 @@ final class WatchSyncManager: NSObject, ObservableObject {
                     }
                 }
             }
-            await MainActor.run { [toSync] in
+            await MainActor.run { [items] in
                 guard let session = self.session else { return }
-                for item in toSync {
-                    let meta = TrackTransferMetadata(track: item.track, playlistId: item.playlistId, playlistTitle: item.playlistTitle, indexInPlaylist: 0)
+                for item in items {
+                    let meta = TrackTransferMetadata(track: item.track, playlistId: item.playlistId, playlistTitle: item.playlistTitle, indexInPlaylist: item.index)
                     guard let metaData = try? JSONEncoder().encode(meta),
                           let metaDict = (try? JSONSerialization.jsonObject(with: metaData)) as? [String: Any] else {
                         self.transferringTrackIds.remove(item.track.videoId)
@@ -287,13 +564,47 @@ final class WatchSyncManager: NSObject, ObservableObject {
     }
 
     private func pushPlaylistIndex(_ playlist: Playlist) {
+        // Track synced playlists locally
+        if let idx = syncedPlaylists.firstIndex(where: { $0.id == playlist.id }) {
+            syncedPlaylists[idx] = playlist
+        } else {
+            syncedPlaylists.append(playlist)
+        }
+        saveSyncState()
+        pushAllPlaylistIndexes()
+    }
+
+    private func pushAllPlaylistIndexes() {
         guard let session, session.activationState == .activated else { return }
-        guard let data = try? JSONEncoder().encode(playlist) else { return }
+        // Send ALL playlist indexes in one applicationContext (single slot — must batch)
+        guard let data = try? JSONEncoder().encode(syncedPlaylists) else { return }
         let context: [String: Any] = [
             WatchMessageKey.type.rawValue: WatchMessageType.playlistIndex.rawValue,
             WatchMessageKey.payload.rawValue: data.base64EncodedString()
         ]
         try? session.updateApplicationContext(context)
+    }
+
+    /// Handle result of Watch direct WiFi download attempt.
+    private func handleDirectDownloadResult(videoId: String, success: Bool) {
+        cancelWifiTimeout(for: videoId)
+
+        if success {
+            transferringTrackIds.remove(videoId)
+            syncedTrackIds.insert(videoId)
+            pendingSyncQueue.removeAll { $0.videoId == videoId }
+            savePendingQueue()
+            saveSyncState()
+            print("[Sync] ✓ WiFi download \(videoId)")
+            checkSyncCompletion()
+        } else {
+            // Mark WiFi-failed so drain uses Bluetooth, remove from transferring, re-drain
+            print("[Sync] ✗ WiFi download failed \(videoId) — will retry via Bluetooth")
+            wifiFailedVideoIds.insert(videoId)
+            transferringTrackIds.remove(videoId)
+            // Item is still in pendingSyncQueue → drainPendingQueue will pick it up via Bluetooth
+            drainPendingQueue()
+        }
     }
 
     private func checkSyncCompletion() {
@@ -354,6 +665,8 @@ extension WatchSyncManager: WCSessionDelegate {
             }
             self.syncUnsyncedDownloads()
             self.drainPendingQueue()
+            // Push all playlist indexes so Watch has full state
+            self.pushAllPlaylistIndexes()
         }
     }
 
@@ -362,7 +675,13 @@ extension WatchSyncManager: WCSessionDelegate {
         Task { @MainActor in
             self.isWatchReachable = reachable
             if reachable {
+                // Fresh connection — clear WiFi-failed so tracks can try WiFi again
+                self.wifiFailedVideoIds.removeAll()
                 self.drainPendingQueue()
+            } else {
+                // Watch went unreachable — cancel pending WiFi timeouts
+                // (items stay in queue, will transfer via Bluetooth on reconnect)
+                self.cancelAllWifiTimeouts()
             }
         }
     }
@@ -392,6 +711,38 @@ extension WatchSyncManager: WCSessionDelegate {
                 self.checkSyncCompletion()
             } else {
                 print("[Sync] ✗ \(videoId): \(errorMsg ?? "unknown")")
+            }
+        }
+    }
+
+    nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+        let typeStr = message[WatchMessageKey.type.rawValue] as? String
+        let trackIds = message["trackIds"] as? [String]
+        let videoId = message["videoId"] as? String
+        let success = message["success"] as? Bool
+        Task { @MainActor in
+            guard let typeStr, let type = WatchMessageType(rawValue: typeStr) else { return }
+            switch type {
+            case .syncInventory:
+                var msg: [String: Any] = [WatchMessageKey.type.rawValue: typeStr]
+                if let trackIds { msg["trackIds"] = trackIds }
+                self.handleSyncInventory(msg)
+            case .downloadResult:
+                if let videoId { self.handleDirectDownloadResult(videoId: videoId, success: success ?? false) }
+            default:
+                break
+            }
+        }
+    }
+
+    nonisolated func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        let typeStr = userInfo[WatchMessageKey.type.rawValue] as? String
+        let videoId = userInfo["videoId"] as? String
+        let success = userInfo["success"] as? Bool
+        Task { @MainActor in
+            guard let typeStr, let type = WatchMessageType(rawValue: typeStr) else { return }
+            if type == .downloadResult, let videoId {
+                self.handleDirectDownloadResult(videoId: videoId, success: success ?? false)
             }
         }
     }

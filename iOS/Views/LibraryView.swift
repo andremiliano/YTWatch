@@ -5,7 +5,6 @@ struct LibraryView: View {
     @ObservedObject private var downloader = AudioDownloader.shared
     @ObservedObject private var sync = WatchSyncManager.shared
     @ObservedObject private var client = YTMusicClient.shared
-    @Environment(\.scenePhase) private var scenePhase
     @State private var appeared = false
 
     private var libraryTitle: String {
@@ -105,9 +104,6 @@ struct LibraryView: View {
         .preferredColorScheme(.dark)
         .task { await store.refresh() }
         .onAppear { withAnimation { appeared = true } }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await store.refresh() } }
-        }
     }
 }
 

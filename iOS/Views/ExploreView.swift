@@ -103,7 +103,7 @@ struct ExploreView: View {
                             }
 
                             // Explore sections (trending, top songs, etc.)
-                            ForEach(Array(store.sections.enumerated()), id: \.element.id) { i, section in
+                            ForEach(Array(store.sections.filter { !$0.title.localizedCaseInsensitiveContains("music video") }.enumerated()), id: \.element.id) { i, section in
                                 VStack(alignment: .leading, spacing: 10) {
                                     Text(section.title)
                                         .sectionHeader()
@@ -165,29 +165,29 @@ struct ExploreView: View {
                     }
                 }
             }
-        }
-        .navigationDestination(isPresented: Binding(
-            get: { radioTrack != nil },
-            set: { if !$0 { radioTrack = nil } }
-        )) {
-            if let track = radioTrack {
-                RadioView(sourceTrack: track)
+            .navigationDestination(isPresented: Binding(
+                get: { radioTrack != nil },
+                set: { if !$0 { radioTrack = nil } }
+            )) {
+                if let track = radioTrack {
+                    RadioView(sourceTrack: track)
+                }
             }
-        }
-        .navigationDestination(isPresented: Binding(
-            get: { albumTarget != nil },
-            set: { if !$0 { albumTarget = nil } }
-        )) {
-            if let album = albumTarget {
-                PlaylistDetailView(playlist: album)
+            .navigationDestination(isPresented: Binding(
+                get: { albumTarget != nil },
+                set: { if !$0 { albumTarget = nil } }
+            )) {
+                if let album = albumTarget {
+                    PlaylistDetailView(playlist: album)
+                }
             }
-        }
-        .navigationDestination(isPresented: Binding(
-            get: { artistTarget != nil },
-            set: { if !$0 { artistTarget = nil } }
-        )) {
-            if let target = artistTarget {
-                ArtistView(channelId: target.id, artistName: target.name)
+            .navigationDestination(isPresented: Binding(
+                get: { artistTarget != nil },
+                set: { if !$0 { artistTarget = nil } }
+            )) {
+                if let target = artistTarget {
+                    ArtistView(channelId: target.id, artistName: target.name)
+                }
             }
         }
         .preferredColorScheme(.dark)

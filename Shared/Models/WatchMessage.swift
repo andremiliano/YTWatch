@@ -12,6 +12,21 @@ enum WatchMessageType: String, Codable {
     case playCommand     // Watch → iPhone: (future) play on phone
     case trackMetadata   // attached to each file transfer as metadata
     case deleteTrack     // iPhone → Watch: delete a track from watch
+    case syncVerify      // iPhone → Watch: request inventory of track IDs on watch
+    case syncInventory   // Watch → iPhone: respond with track IDs actually on disk
+    case directDownload  // iPhone → Watch: stream URL for Watch to download directly via WiFi
+    case downloadResult  // Watch → iPhone: result of a direct download attempt
+}
+
+/// Sent from iPhone to Watch — Watch downloads audio directly over WiFi
+struct DirectDownloadPayload: Codable {
+    let track: Track
+    let playlistId: String
+    let playlistTitle: String
+    let indexInPlaylist: Int
+    let streamURL: String
+    let headers: [String: String]
+    let thumbnailDownloadURL: String?
 }
 
 struct TrackTransferMetadata: Codable {

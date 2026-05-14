@@ -186,34 +186,58 @@ final class YTMusicClient: NSObject, ObservableObject {
         var seenSongs = Set<String>()
         var seenAlbums = Set<String>()
 
-        // Walk tree collecting shelves by title
-        func walkShelves(_ obj: Any) {
-            guard let dict = obj as? [String: Any] else {
-                if let arr = obj as? [Any] { arr.forEach(walkShelves) }
-                return
-            }
-            if let shelf = dict["musicShelfRenderer"] as? [String: Any] {
-                let shelfTitle = ((shelf["title"] as? [String: Any])?["runs"] as? [[String: Any]])?
-                    .first?["text"] as? String ?? ""
-                let contents = shelf["contents"] as? [Any] ?? []
+        var stack: [Any] = [json]
+        while let obj = stack.popLast() {
+            if let dict = obj as? [String: Any] {
+                if let shelf = dict["musicShelfRenderer"] as? [String: Any] {
+                    let shelfTitle = ((shelf["title"] as? [String: Any])?["runs"] as? [[String: Any]])?
+                        .first?["text"] as? String ?? ""
+                    let contents = shelf["contents"] as? [Any] ?? []
+                    let isAlbumShelf = shelfTitle.lowercased().contains("album") || shelfTitle.lowercased().contains("single")
 
-                if shelfTitle.lowercased().contains("album") || shelfTitle.lowercased().contains("single") {
                     for item in contents {
-                        if let r = (item as? [String: Any])?["musicTwoRowItemRenderer"] as? [String: Any],
-                           let p = parsePlaylistRenderer(r),
-                           seenAlbums.insert(p.id).inserted { albums.append(p) }
-                    }
-                } else {
-                    for item in contents {
-                        if let r = (item as? [String: Any])?["musicResponsiveListItemRenderer"] as? [String: Any],
-                           let t = parseTrackRenderer(r),
-                           seenSongs.insert(t.id).inserted { songs.append(t) }
+                        let itemDict = item as? [String: Any]
+                        if isAlbumShelf {
+                            // Albums via musicTwoRowItemRenderer
+                            if let r = itemDict?["musicTwoRowItemRenderer"] as? [String: Any],
+                               let p = parsePlaylistRenderer(r),
+                               seenAlbums.insert(p.id).inserted { albums.append(p) }
+                            // Albums also appear as musicResponsiveListItemRenderer with browse endpoint
+                            if let r = itemDict?["musicResponsiveListItemRenderer"] as? [String: Any],
+                               let p = parseAlbumFromResponsiveRenderer(r),
+                               seenAlbums.insert(p.id).inserted { albums.append(p) }
+                        } else {
+                            if let r = itemDict?["musicResponsiveListItemRenderer"] as? [String: Any],
+                               let t = parseTrackRenderer(r),
+                               seenSongs.insert(t.id).inserted { songs.append(t) }
+                        }
                     }
                 }
+                // Top result cards (musicCardShelfRenderer) can contain albums
+                if let card = dict["musicCardShelfRenderer"] as? [String: Any] {
+                    if let nav = card["title"] as? [String: Any],
+                       let runs = nav["runs"] as? [[String: Any]],
+                       let firstRun = runs.first,
+                       let navEnd = firstRun["navigationEndpoint"] as? [String: Any],
+                       let browse = navEnd["browseEndpoint"] as? [String: Any],
+                       let browseId = browse["browseId"] as? String,
+                       (browseId.hasPrefix("MPRE") || browseId.hasPrefix("OLAK")),
+                       let title = firstRun["text"] as? String {
+                        let subtitleRuns = (card["subtitle"] as? [String: Any])?["runs"] as? [[String: Any]]
+                        let subtitle = subtitleRuns?.compactMap { $0["text"] as? String }.joined()
+                        let thumbRenderer = (card["thumbnail"] as? [String: Any])?["musicThumbnailRenderer"] as? [String: Any]
+                        let thumbObj = thumbRenderer?["thumbnail"] as? [String: Any]
+                        let thumbnailURL = (thumbObj?["thumbnails"] as? [[String: Any]])?.last?["url"] as? String
+                        let pid = browseId.hasPrefix("VL") ? String(browseId.dropFirst(2)) : browseId
+                        let p = Playlist(id: pid, title: title, subtitle: subtitle, thumbnailURL: thumbnailURL, tracks: [])
+                        if seenAlbums.insert(p.id).inserted { albums.append(p) }
+                    }
+                }
+                stack.append(contentsOf: dict.values)
+            } else if let arr = obj as? [Any] {
+                stack.append(contentsOf: arr)
             }
-            for v in dict.values { walkShelves(v) }
         }
-        walkShelves(json)
 
         return SearchResults(songs: songs, albums: albums)
     }
@@ -243,7 +267,8 @@ final class YTMusicClient: NSObject, ObservableObject {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
 
         var suggestions: [String] = []
-        func walk(_ obj: Any) {
+        var stack: [Any] = [json]
+        while let obj = stack.popLast() {
             if let dict = obj as? [String: Any] {
                 if let runs = dict["runs"] as? [[String: Any]] {
                     let text = runs.compactMap { $0["text"] as? String }.joined()
@@ -252,12 +277,11 @@ final class YTMusicClient: NSObject, ObservableObject {
                 if let query = dict["query"] as? String, !query.isEmpty, !suggestions.contains(query) {
                     suggestions.append(query)
                 }
-                for v in dict.values { walk(v) }
+                stack.append(contentsOf: dict.values)
             } else if let arr = obj as? [Any] {
-                for item in arr { walk(item) }
+                stack.append(contentsOf: arr)
             }
         }
-        walk(json)
         return Array(suggestions.prefix(8))
     }
 
@@ -288,7 +312,8 @@ final class YTMusicClient: NSObject, ObservableObject {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
 
         var categories: [MoodCategory] = []
-        func walk(_ obj: Any) {
+        var stack: [Any] = [json]
+        while let obj = stack.popLast() {
             if let dict = obj as? [String: Any] {
                 if let chip = dict["musicNavigationButtonRenderer"] as? [String: Any] {
                     let title = (chip["buttonText"] as? [String: Any])?["runs"] as? [[String: Any]]
@@ -303,12 +328,11 @@ final class YTMusicClient: NSObject, ObservableObject {
                         categories.append(MoodCategory(title: text, params: params, color: colorHex))
                     }
                 }
-                for v in dict.values { walk(v) }
+                stack.append(contentsOf: dict.values)
             } else if let arr = obj as? [Any] {
-                for item in arr { walk(item) }
+                stack.append(contentsOf: arr)
             }
         }
-        walk(json)
         return categories
     }
 
@@ -383,8 +407,9 @@ final class YTMusicClient: NSObject, ObservableObject {
             }
         }
 
-        func walkShelves(_ obj: Any, depth: Int = 0) {
-            guard depth < 20 else { return }
+        var shelfStack: [(Any, Int)] = [(json, 0)]
+        while let (obj, depth) = shelfStack.popLast() {
+            guard depth < 20 else { continue }
             if let dict = obj as? [String: Any] {
                 if let shelf = dict["musicShelfRenderer"] as? [String: Any] {
                     let shelfTitle = ((shelf["title"] as? [String: Any])?["runs"] as? [[String: Any]])?
@@ -419,12 +444,11 @@ final class YTMusicClient: NSObject, ObservableObject {
                         }
                     }
                 }
-                for v in dict.values { walkShelves(v, depth: depth + 1) }
+                for v in dict.values { shelfStack.append((v, depth + 1)) }
             } else if let arr = obj as? [Any] {
-                for item in arr { walkShelves(item, depth: depth + 1) }
+                for item in arr { shelfStack.append((item, depth + 1)) }
             }
         }
-        walkShelves(json)
 
         return ArtistPage(
             name: name,
@@ -453,8 +477,9 @@ final class YTMusicClient: NSObject, ObservableObject {
         var tracks: [Track] = []
         var playlistTitle = "Radio"
 
-        func walkRadio(_ obj: Any, depth: Int = 0) {
-            guard depth < 20 else { return }
+        var radioStack: [(Any, Int)] = [(json, 0)]
+        while let (obj, depth) = radioStack.popLast() {
+            guard depth < 20 else { continue }
             if let dict = obj as? [String: Any] {
                 if let panel = dict["playlistPanelRenderer"] as? [String: Any] {
                     if let t = panel["title"] as? String {
@@ -473,12 +498,11 @@ final class YTMusicClient: NSObject, ObservableObject {
                         }
                     }
                 }
-                for v in dict.values { walkRadio(v, depth: depth + 1) }
+                for v in dict.values { radioStack.append((v, depth + 1)) }
             } else if let arr = obj as? [Any] {
-                for item in arr { walkRadio(item, depth: depth + 1) }
+                for item in arr { radioStack.append((item, depth + 1)) }
             }
         }
-        walkRadio(json)
 
         return Playlist(id: "RADIO_\(videoId)", title: playlistTitle, thumbnailURL: nil, tracks: tracks)
     }
@@ -508,21 +532,21 @@ final class YTMusicClient: NSObject, ObservableObject {
     private func parseHomeSections(_ json: [String: Any]) -> [HomeFeedSection] {
         var sections: [HomeFeedSection] = []
 
-        func walkSections(_ obj: Any, depth: Int = 0) {
-            guard depth < 20 else { return }
+        var sectionStack: [(Any, Int)] = [(json, 0)]
+        while let (obj, depth) = sectionStack.popLast() {
+            guard depth < 20 else { continue }
             if let dict = obj as? [String: Any] {
                 if let carousel = dict["musicCarouselShelfRenderer"] as? [String: Any] {
                     if let section = parseCarouselSection(carousel) { sections.append(section) }
                 } else if let shelf = dict["musicShelfRenderer"] as? [String: Any] {
                     if let section = parseShelfSection(shelf) { sections.append(section) }
                 } else {
-                    for v in dict.values { walkSections(v, depth: depth + 1) }
+                    for v in dict.values { sectionStack.append((v, depth + 1)) }
                 }
             } else if let arr = obj as? [Any] {
-                for item in arr { walkSections(item, depth: depth + 1) }
+                for item in arr { sectionStack.append((item, depth + 1)) }
             }
         }
-        walkSections(json)
         return sections
     }
 
@@ -1526,6 +1550,46 @@ final class YTMusicClient: NSObject, ObservableObject {
     }
 
     // MARK: - Parsing
+
+    // Parse album from musicResponsiveListItemRenderer (used in search results for albums)
+    private func parseAlbumFromResponsiveRenderer(_ r: [String: Any]) -> Playlist? {
+        // Check if this item navigates to an album browse page
+        var browseId: String?
+        if let nav = r["navigationEndpoint"] as? [String: Any],
+           let browse = nav["browseEndpoint"] as? [String: Any],
+           let bid = browse["browseId"] as? String,
+           (bid.hasPrefix("MPRE") || bid.hasPrefix("OLAK")) {
+            browseId = bid
+        }
+        // Also check overlay for browse endpoint
+        if browseId == nil,
+           let overlay = r["overlay"] as? [String: Any],
+           let overlayRenderer = overlay["musicItemThumbnailOverlayRenderer"] as? [String: Any],
+           let content = overlayRenderer["content"] as? [String: Any],
+           let playBtn = content["musicPlayButtonRenderer"] as? [String: Any],
+           let nav = playBtn["playNavigationEndpoint"] as? [String: Any],
+           let watch = nav["watchPlaylistEndpoint"] as? [String: Any],
+           let pid = watch["playlistId"] as? String {
+            browseId = pid
+        }
+        guard let bid = browseId else { return nil }
+
+        guard let columns = r["flexColumns"] as? [[String: Any]] else { return nil }
+        let col0 = columns[safe: 0]?["musicResponsiveListItemFlexColumnRenderer"] as? [String: Any]
+        let titleRuns = (col0?["text"] as? [String: Any])?["runs"] as? [[String: Any]]
+        guard let title = titleRuns?.first?["text"] as? String else { return nil }
+
+        let col1 = columns[safe: 1]?["musicResponsiveListItemFlexColumnRenderer"] as? [String: Any]
+        let subtitleRuns = (col1?["text"] as? [String: Any])?["runs"] as? [[String: Any]]
+        let subtitle = subtitleRuns?.compactMap { $0["text"] as? String }.joined()
+
+        let thumbRenderer = (r["thumbnail"] as? [String: Any])?["musicThumbnailRenderer"] as? [String: Any]
+        let thumbObj = thumbRenderer?["thumbnail"] as? [String: Any]
+        let thumbnailURL = (thumbObj?["thumbnails"] as? [[String: Any]])?.last?["url"] as? String
+
+        let pid = bid.hasPrefix("VL") ? String(bid.dropFirst(2)) : bid
+        return Playlist(id: pid, title: title, subtitle: subtitle, thumbnailURL: thumbnailURL, tracks: [])
+    }
 
     private func parsePlaylistsFromBrowse(_ data: Data) throws -> [Playlist] {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {

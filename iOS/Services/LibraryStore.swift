@@ -63,7 +63,6 @@ final class LibraryStore: ObservableObject {
                 if let idx = updated.firstIndex(where: { $0.id == id }) {
                     let oldTracks = updated[idx].tracks
                     updated[idx].tracks = tracks
-                    playlists = updated
 
                     let downloader = AudioDownloader.shared
                     let hasDownloads = oldTracks.contains { downloader.isDownloaded($0.videoId) }
@@ -78,6 +77,7 @@ final class LibraryStore: ObservableObject {
                 }
             }
         }
+        // Single update after all tracks fetched — no mid-loop UI churn
         playlists = updated.sorted { $0.title < $1.title }
         saveToDisk()
 

@@ -7,8 +7,6 @@ struct PlaylistDetailView: View {
     @ObservedObject private var sync = WatchSyncManager.shared
     @State private var tracks: [Track] = []
     @State private var isLoadingTracks = false
-    @State private var isDownloadingAll = false
-    @State private var isSyncing = false
     @State private var appeared = false
     @State private var showDeleteAllConfirm = false
     @State private var radioTrack: Track?
@@ -20,6 +18,13 @@ struct PlaylistDetailView: View {
     }
     private var allDownloaded: Bool { downloadedCount == tracks.count && !tracks.isEmpty }
     private var allSynced: Bool { tracks.allSatisfy { sync.syncedTrackIds.contains($0.videoId) } }
+    // Derived from actual downloader state — survives navigation
+    private var isDownloadingAny: Bool {
+        tracks.contains { downloader.isDownloading($0.videoId) || downloader.isQueued($0.videoId) }
+    }
+    private var isSyncingAny: Bool {
+        tracks.contains { sync.transferringTrackIds.contains($0.videoId) }
+    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -64,9 +69,9 @@ struct PlaylistDetailView: View {
 
             if !isLoadingTracks {
                 FloatingActionBar(
-                    trackCount: tracks.count,
+                    tracks: tracks,
                     allSynced: allSynced,
-                    isWorking: isDownloadingAll || isSyncing,
+                    isWorking: isDownloadingAny || isSyncingAny,
                     downloadedCount: downloadedCount,
                     onAction: downloadAndSync
                 )
@@ -145,34 +150,20 @@ struct PlaylistDetailView: View {
     }
 
     private func downloadAndSync() {
-        isDownloadingAll = true
-        let pending = tracks.filter { !downloader.isDownloaded($0.videoId) }
-        if !pending.isEmpty { downloader.beginBatch(total: pending.count) }
-        let pid = playlist.id
-        let ptitle = playlist.title
-        let allTracks = tracks
-        Task {
-            if !pending.isEmpty {
-                let maxConcurrent = 4
-                await withTaskGroup(of: Void.self) { group in
-                    for (i, track) in pending.enumerated() {
-                        if i >= maxConcurrent { await group.next() }
-                        group.addTask {
-                            do { _ = try await AudioDownloader.shared.download(track: track, playlistId: pid, playlistTitle: ptitle) }
-                            catch { print("[DL] \(track.title): \(error)") }
-                        }
-                    }
-                }
-                downloader.endBatch()
-            }
-            isDownloadingAll = false
+        // Fire-and-forget — AudioDownloader owns the task lifecycle
+        downloader.downloadBatch(tracks: tracks, playlistId: playlist.id, playlistTitle: playlist.title)
 
-            if sync.isAvailable {
-                isSyncing = true
-                var p = playlist
-                p.tracks = allTracks
-                sync.syncPlaylist(p)
-                isSyncing = false
+        // Sync after a short delay to let downloads queue up
+        if sync.isAvailable {
+            let allTracks = tracks
+            var p = playlist
+            p.tracks = allTracks
+            Task.detached {
+                // Wait briefly for downloads to start, then push playlist index
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                await MainActor.run {
+                    WatchSyncManager.shared.syncPlaylist(p)
+                }
             }
         }
     }
@@ -256,17 +247,43 @@ private struct PlaylistHeroHeader: View {
 // MARK: - Floating Action Bar
 
 private struct FloatingActionBar: View {
-    let trackCount: Int
+    let tracks: [Track]
     let allSynced: Bool
     let isWorking: Bool
     let downloadedCount: Int
     let onAction: () -> Void
 
     @ObservedObject private var sync = WatchSyncManager.shared
+    @ObservedObject private var downloader = AudioDownloader.shared
+
+    private var trackCount: Int { tracks.count }
+
+    /// Tracks not downloaded, not downloading, not queued, not errored — truly need first download
+    private var notStartedCount: Int {
+        tracks.filter { t in
+            !downloader.isDownloaded(t.videoId) &&
+            !downloader.isDownloading(t.videoId) &&
+            !downloader.isQueued(t.videoId) &&
+            downloader.downloadErrors[t.videoId] == nil
+        }.count
+    }
+
+    /// Tracks with errors that can be retried
+    private var errorCount: Int {
+        tracks.filter { t in
+            downloader.downloadErrors[t.videoId] != nil &&
+            !downloader.isDownloading(t.videoId) &&
+            !downloader.isQueued(t.videoId)
+        }.count
+    }
 
     private var label: String {
         if allSynced { return "Synced to Watch" }
         if downloadedCount == trackCount && !sync.isAvailable { return "Downloaded" }
+        if isWorking && notStartedCount > 0 { return "Download Remaining (\(notStartedCount))" }
+        if isWorking && errorCount > 0 { return "Retry Failed (\(errorCount))" }
+        if isWorking { return downloadedCount < trackCount ? "Downloading…" : "Syncing to Watch" }
+        if errorCount > 0 { return "Retry Failed (\(errorCount))" }
         return "Download & Sync"
     }
 
@@ -330,7 +347,7 @@ private struct FloatingActionBar: View {
 
             Button(action: onAction) {
                 HStack(spacing: 8) {
-                    if isWorking {
+                    if isWorking && notStartedCount == 0 && errorCount == 0 {
                         ProgressView().tint(.white).scaleEffect(0.75)
                     } else {
                         Image(systemName: icon)
@@ -345,7 +362,7 @@ private struct FloatingActionBar: View {
                 .background(isDone ? Color.appSurface : Color.ytRed)
                 .clipShape(Capsule())
             }
-            .disabled(isDone || isWorking)
+            .disabled(isDone)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 16)

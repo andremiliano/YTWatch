@@ -82,6 +82,57 @@ struct SettingsView: View {
                                 value: estimatedWatchStorage
                             )
 
+                            Divider().background(Color.appBorder).padding(.horizontal, 14)
+
+                            // Verify & Re-sync button
+                            Button {
+                                sync.verifySyncAndRepair()
+                            } label: {
+                                HStack(spacing: 12) {
+                                    if sync.isVerifying {
+                                        ProgressView()
+                                            .tint(Color.ytRed)
+                                            .scaleEffect(0.7)
+                                            .frame(width: 28, height: 28)
+                                    } else {
+                                        Image(systemName: "checkmark.shield")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundStyle(.green)
+                                            .frame(width: 28, height: 28)
+                                            .background(Color.green.opacity(0.12))
+                                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                    }
+
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text("Verify & Re-sync")
+                                            .font(.system(size: 15))
+                                            .foregroundStyle(.white)
+                                        if let r = sync.lastVerifyResult {
+                                            if r.missingOnWatch == 0 {
+                                                Text("All good — \(r.actuallyOnWatch) tracks on Watch")
+                                                    .font(.system(size: 11))
+                                                    .foregroundStyle(Color.appFaint)
+                                            } else {
+                                                Text("Fixed \(r.missingOnWatch) missing · re-syncing \(r.resynced)")
+                                                    .font(.system(size: 11))
+                                                    .foregroundStyle(.orange)
+                                            }
+                                        } else {
+                                            Text("Check Watch has all synced tracks")
+                                                .font(.system(size: 11))
+                                                .foregroundStyle(Color.appFaint)
+                                        }
+                                    }
+
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 13)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!sync.isAvailable || !sync.isWatchReachable || sync.isVerifying)
+                            .opacity(sync.isAvailable && sync.isWatchReachable ? 1 : 0.5)
+
                             if !sync.transferringTrackIds.isEmpty || sync.pendingSyncCount > 0 {
                                 Divider().background(Color.appBorder).padding(.horizontal, 14)
 
