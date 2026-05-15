@@ -342,6 +342,22 @@ final class WatchFileReceiver: NSObject, ObservableObject {
         refreshAvailable()
     }
 
+    /// Batch upsert — saves disk once, refreshes once. Use when receiving many playlists at once.
+    private func upsertPlaylistsBatch(_ incoming: [Playlist]) {
+        var existingById = Dictionary(uniqueKeysWithValues: playlists.enumerated().map { ($0.element.id, $0.offset) })
+        for p in incoming {
+            if let idx = existingById[p.id] {
+                playlists[idx] = p
+            } else {
+                existingById[p.id] = playlists.count
+                playlists.append(p)
+            }
+        }
+        savePlaylistsToDisk()
+        _cachedTrackIds = nil
+        refreshAvailable()
+    }
+
     func deleteTrack(videoId: String) {
         let audio = Self.audioDirectory.appendingPathComponent("\(videoId).m4a")
         let thumb = Self.thumbnailDirectory.appendingPathComponent("\(videoId).jpg")
@@ -427,7 +443,22 @@ extension WatchFileReceiver: WCSessionDelegate {
 
             let destURL = Self.audioDirectory.appendingPathComponent("\(transfer.track.videoId).m4a")
             try? self.fm.removeItem(at: destURL)
-            try? self.fm.copyItem(at: fileURL, to: destURL)
+            // Track whether write succeeded — only confirm sync to phone if file actually landed
+            let wroteSuccessfully: Bool
+            do {
+                try self.fm.copyItem(at: fileURL, to: destURL)
+                // Verify file is non-empty
+                let size = (try? destURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                wroteSuccessfully = size > 100_000
+            } catch {
+                print("[Receiver] BT write failed for \(transfer.track.videoId): \(error.localizedDescription)")
+                wroteSuccessfully = false
+            }
+
+            // Confirm to phone whether file actually wrote (closes the BT-sync drift bug)
+            self.sendDownloadResult(videoId: transfer.track.videoId, success: wroteSuccessfully)
+
+            guard wroteSuccessfully else { return }
 
             // Update sync progress
             self.syncingPlaylistName = transfer.playlistTitle
@@ -464,12 +495,19 @@ extension WatchFileReceiver: WCSessionDelegate {
         // dispatching to Task { @MainActor } risks calling it after WCSession invalidates it.
         if let typeStr = message[WatchMessageKey.type.rawValue] as? String,
            typeStr == WatchMessageType.syncVerify.rawValue {
-            // Inline directory scan (no MainActor needed — just FileManager)
+            // Inline directory scan (no MainActor needed — just FileManager).
+            // Only count files larger than 100KB — excludes in-flight transfers and corrupt files.
             let audioDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("Audio", isDirectory: true)
             let ids: [String]
-            if let files = try? FileManager.default.contentsOfDirectory(at: audioDir, includingPropertiesForKeys: nil) {
-                ids = files.filter { $0.pathExtension == "m4a" }.map { $0.deletingPathExtension().lastPathComponent }
+            if let files = try? FileManager.default.contentsOfDirectory(
+                at: audioDir, includingPropertiesForKeys: [.fileSizeKey]
+            ) {
+                ids = files.compactMap { url -> String? in
+                    guard url.pathExtension == "m4a" else { return nil }
+                    let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                    return size > 100_000 ? url.deletingPathExtension().lastPathComponent : nil
+                }
             } else {
                 ids = []
             }
@@ -527,9 +565,9 @@ extension WatchFileReceiver: WCSessionDelegate {
                 guard let b64, let data = Data(base64Encoded: b64) else { return }
                 // Try batch format (array of playlists) first, fall back to single
                 if let batchPlaylists = try? JSONDecoder().decode([Playlist].self, from: data) {
-                    for playlist in batchPlaylists {
-                        self.upsertPlaylist(playlist)
-                    }
+                    // Batch upsert: mutate array, save disk ONCE at end (not per playlist).
+                    // 30 playlists used to trigger 30 disk writes + 30 directory scans → Watch crash.
+                    self.upsertPlaylistsBatch(batchPlaylists)
                     print("[Receiver] Updated \(batchPlaylists.count) playlists from applicationContext")
                 } else if let playlist = try? JSONDecoder().decode(Playlist.self, from: data) {
                     self.upsertPlaylist(playlist)

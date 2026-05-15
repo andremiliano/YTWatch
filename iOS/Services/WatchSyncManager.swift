@@ -186,96 +186,96 @@ final class WatchSyncManager: NSObject, ObservableObject {
     }
 
     /// Process Watch inventory response — fix state and re-sync missing tracks.
+    /// Heavy work runs OFF MainActor to avoid watchdog kill on large catalogs (200+ tracks).
     private func handleSyncInventory(watchTrackIds: [String]) {
         let watchSet = Set(watchTrackIds)
         let phoneThinksSynced = syncedTrackIds.count
 
-        // 1. Remove from syncedTrackIds anything Watch doesn't have
+        // 1. Reconcile syncedTrackIds with Watch reality (fast, just Set operations)
         let falseSynced = syncedTrackIds.subtracting(watchSet)
-        for id in falseSynced {
-            syncedTrackIds.remove(id)
-        }
-
-        // 2. Add to syncedTrackIds anything Watch has that we forgot about
         let untracked = watchSet.subtracting(syncedTrackIds)
-        for id in untracked {
-            syncedTrackIds.insert(id)
-        }
+        syncedTrackIds.subtract(falseSynced)
+        syncedTrackIds.formUnion(untracked)
         saveSyncState()
 
-        // 3. Re-sync ALL missing tracks that we have locally
-        //    Build a lookup: videoId → (playlistId, playlistTitle) from syncedPlaylists
-        var trackPlaylistMap: [String: (playlistId: String, playlistTitle: String)] = [:]
-        for playlist in syncedPlaylists {
-            for track in playlist.tracks {
-                trackPlaylistMap[track.videoId] = (playlist.id, playlist.title)
-            }
-        }
+        // 2. Snapshot data needed for off-main work
+        let snapshotPlaylists = syncedPlaylists
+        let snapshotMetadata = AudioDownloader.shared.trackMetadata
+        let snapshotDownloaded = AudioDownloader.shared.downloadedTracks
+        let alreadyQueuedSet = Set(pendingSyncQueue.map(\.videoId))
+        let transferringSnapshot = transferringTrackIds
 
-        var resynced = 0
-        var alreadyQueued = Set(pendingSyncQueue.map(\.videoId))
+        // 3. Build re-sync items OFF MainActor (this loop was the watchdog killer)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            var items: [PendingSyncItem] = []
+            var alreadyQueued = alreadyQueuedSet
 
-        for videoId in falseSynced {
-            // Must have the file on iPhone to re-sync
-            guard AudioDownloader.shared.localURL(for: videoId) != nil else { continue }
-            // Don't double-queue
-            guard !alreadyQueued.contains(videoId) else { continue }
-            guard !transferringTrackIds.contains(videoId) else { continue }
-
-            // Get track metadata — try syncedPlaylists first, then trackMetadata fallback
-            let item: PendingSyncItem
-            if let playlistInfo = trackPlaylistMap[videoId],
-               let track = syncedPlaylists
-                .first(where: { $0.id == playlistInfo.playlistId })?
-                .tracks.first(where: { $0.videoId == videoId }) {
-                // Full Track data from synced playlist
-                item = PendingSyncItem(
-                    videoId: videoId, title: track.title, artist: track.artist,
-                    album: track.album, durationSeconds: track.durationSeconds,
-                    thumbnailURL: track.thumbnailURL,
-                    playlistId: playlistInfo.playlistId, playlistTitle: playlistInfo.playlistTitle
-                )
-            } else if let meta = AudioDownloader.shared.trackMetadata[videoId] {
-                // Fallback: track was auto-synced, not in any synced playlist
-                // Find which playlist it belongs to (if any)
-                let pid = trackPlaylistMap[videoId]?.playlistId ?? "library"
-                let ptitle = trackPlaylistMap[videoId]?.playlistTitle ?? "Downloads"
-                item = PendingSyncItem(
-                    videoId: videoId, title: meta.title, artist: meta.artist,
-                    album: meta.album, durationSeconds: meta.durationSeconds,
-                    thumbnailURL: meta.thumbnailURL,
-                    playlistId: pid, playlistTitle: ptitle
-                )
-            } else {
-                // No metadata at all — skip (can't construct proper Track)
-                print("[Sync] Verify: no metadata for \(videoId), skipping re-sync")
-                continue
+            // Build lookup once
+            var trackPlaylistMap: [String: (playlistId: String, playlistTitle: String, track: Track)] = [:]
+            for playlist in snapshotPlaylists {
+                for track in playlist.tracks {
+                    trackPlaylistMap[track.videoId] = (playlist.id, playlist.title, track)
+                }
             }
 
-            pendingSyncQueue.append(item)
-            alreadyQueued.insert(videoId)
-            resynced += 1
-        }
-        savePendingQueue()
+            for videoId in falseSynced {
+                guard snapshotDownloaded[videoId] != nil else { continue } // no local file
+                guard !alreadyQueued.contains(videoId) else { continue }
+                guard !transferringSnapshot.contains(videoId) else { continue }
 
-        let result = VerifyResult(
-            phoneThinksSynced: phoneThinksSynced,
-            actuallyOnWatch: watchSet.count,
-            missingOnWatch: falseSynced.count,
-            resynced: resynced,
-            date: Date()
-        )
-        lastVerifyResult = result
-        isVerifying = false
+                let item: PendingSyncItem
+                if let info = trackPlaylistMap[videoId] {
+                    item = PendingSyncItem(
+                        videoId: videoId, title: info.track.title, artist: info.track.artist,
+                        album: info.track.album, durationSeconds: info.track.durationSeconds,
+                        thumbnailURL: info.track.thumbnailURL,
+                        playlistId: info.playlistId, playlistTitle: info.playlistTitle
+                    )
+                } else if let meta = snapshotMetadata[videoId] {
+                    item = PendingSyncItem(
+                        videoId: videoId, title: meta.title, artist: meta.artist,
+                        album: meta.album, durationSeconds: meta.durationSeconds,
+                        thumbnailURL: meta.thumbnailURL,
+                        playlistId: "library", playlistTitle: "Downloads"
+                    )
+                } else {
+                    continue // no metadata
+                }
 
-        print("[Sync] Verify: phone=\(phoneThinksSynced) watch=\(watchSet.count) missing=\(falseSynced.count) resyncing=\(resynced)")
+                items.append(item)
+                alreadyQueued.insert(videoId)
 
-        // Push updated playlist indexes so Watch has correct metadata
-        pushAllPlaylistIndexes()
+                // Yield occasionally to keep system responsive
+                if items.count % 50 == 0 {
+                    await Task.yield()
+                }
+            }
 
-        // Start re-syncing missing tracks
-        if resynced > 0 {
-            drainPendingQueue()
+            // Apply mutations on MainActor in single batch
+            await MainActor.run { [weak self, items] in
+                guard let self else { return }
+                self.pendingSyncQueue.append(contentsOf: items)
+                self.savePendingQueue()
+
+                let result = VerifyResult(
+                    phoneThinksSynced: phoneThinksSynced,
+                    actuallyOnWatch: watchSet.count,
+                    missingOnWatch: falseSynced.count,
+                    resynced: items.count,
+                    date: Date()
+                )
+                self.lastVerifyResult = result
+                self.isVerifying = false
+
+                print("[Sync] Verify: phone=\(phoneThinksSynced) watch=\(watchSet.count) missing=\(falseSynced.count) resyncing=\(items.count)")
+
+                // Start re-sync in batched fashion (drainPendingQueue caps at maxConcurrentSyncTransfers)
+                if !items.isEmpty {
+                    self.drainPendingQueue()
+                }
+                // NOTE: skip pushAllPlaylistIndexes here — too heavy during massive re-sync.
+                // The Watch already has playlist metadata; verify shouldn't trigger bulk push.
+            }
         }
     }
 
@@ -591,28 +591,67 @@ final class WatchSyncManager: NSObject, ObservableObject {
         try? session.updateApplicationContext(context)
     }
 
-    /// Handle result of Watch direct WiFi download attempt.
+    /// Handle authoritative confirmation from Watch about a track (WiFi OR Bluetooth path).
+    /// This is the SINGLE source of truth for syncedTrackIds — Watch tells us what it has.
     private func handleDirectDownloadResult(videoId: String, success: Bool) {
         cancelWifiTimeout(for: videoId)
+        transferringTrackIds.remove(videoId)
 
         if success {
-            transferringTrackIds.remove(videoId)
+            // Watch confirmed file written successfully — mark as synced
             syncedTrackIds.insert(videoId)
             pendingSyncQueue.removeAll { $0.videoId == videoId }
             savePendingQueue()
             saveSyncState()
-            print("[Sync] ✓ WiFi download \(videoId) (\(syncedTrackIds.count) total synced)")
+            print("[Sync] ✓ \(videoId) confirmed by Watch (\(syncedTrackIds.count) total)")
             checkSyncCompletion()
-            // Drain next batch — frees a slot for more transfers
             drainPendingQueue()
         } else {
-            // Mark WiFi-failed so drain uses Bluetooth, remove from transferring, re-drain
-            print("[Sync] ✗ WiFi download failed \(videoId) — will retry via Bluetooth")
-            wifiFailedVideoIds.insert(videoId)
-            transferringTrackIds.remove(videoId)
-            // Item is still in pendingSyncQueue → drainPendingQueue will pick it up via Bluetooth
+            // Watch FAILED to write file — CORRECT phone state and re-queue
+            // (this is critical: closes the BT premature-mark drift bug)
+            if syncedTrackIds.remove(videoId) != nil {
+                saveSyncState()
+                print("[Sync] ✗ Corrected: \(videoId) was marked synced but Watch failed to write")
+            } else {
+                print("[Sync] ✗ \(videoId) failed on Watch")
+            }
+            wifiFailedVideoIds.insert(videoId) // force Bluetooth retry path
+            // Re-queue if not already in pendingSyncQueue
+            if !pendingSyncQueue.contains(where: { $0.videoId == videoId }) {
+                reEnqueueForRetry(videoId: videoId)
+            }
             drainPendingQueue()
         }
+    }
+
+    /// Re-enqueue a track for sync (used on Watch-reported failure).
+    private func reEnqueueForRetry(videoId: String) {
+        // Build PendingSyncItem from known metadata
+        var pid = "library"
+        var ptitle = "Downloads"
+        var trackData: (title: String, artist: String, album: String?, duration: Int, thumb: String?)?
+
+        for playlist in syncedPlaylists {
+            if let t = playlist.tracks.first(where: { $0.videoId == videoId }) {
+                pid = playlist.id
+                ptitle = playlist.title
+                trackData = (t.title, t.artist, t.album, t.durationSeconds, t.thumbnailURL)
+                break
+            }
+        }
+        if trackData == nil, let m = AudioDownloader.shared.trackMetadata[videoId] {
+            trackData = (m.title, m.artist, m.album, m.durationSeconds, m.thumbnailURL)
+        }
+        guard let t = trackData else {
+            print("[Sync] Cannot re-enqueue \(videoId): no metadata")
+            return
+        }
+        pendingSyncQueue.append(PendingSyncItem(
+            videoId: videoId, title: t.title, artist: t.artist,
+            album: t.album, durationSeconds: t.duration,
+            thumbnailURL: t.thumb, playlistId: pid, playlistTitle: ptitle
+        ))
+        savePendingQueue()
     }
 
     private func checkSyncCompletion() {
@@ -715,18 +754,24 @@ extension WatchSyncManager: WCSessionDelegate {
         Task { @MainActor in
             guard let videoId, !isThumbnail else { return }
             self.pendingTransfers.removeValue(forKey: videoId)
-            self.transferringTrackIds.remove(videoId)
+
             if succeeded {
+                // iPhone finished sending. TENTATIVELY mark synced — Watch will confirm via downloadResult.
+                // If Watch fails to write, handleDirectDownloadResult removes from syncedTrackIds (correction).
+                self.transferringTrackIds.remove(videoId)
                 self.syncedTrackIds.insert(videoId)
                 self.pendingSyncQueue.removeAll { $0.videoId == videoId }
                 self.savePendingQueue()
                 self.saveSyncState()
-                print("[Sync] ✓ BT \(videoId) (\(self.syncedTrackIds.count) total synced)")
+                print("[Sync] → BT \(videoId) sent (\(self.syncedTrackIds.count) tentative)")
                 self.checkSyncCompletion()
-                // Drain next batch — frees a slot for more transfers
                 self.drainPendingQueue()
             } else {
-                print("[Sync] ✗ \(videoId): \(errorMsg ?? "unknown")")
+                // Transfer failed at WCSession level → file never reached Watch.
+                // Keep in pendingSyncQueue, retry on next drain.
+                self.transferringTrackIds.remove(videoId)
+                print("[Sync] ✗ BT \(videoId): \(errorMsg ?? "unknown") — will retry")
+                self.drainPendingQueue()
             }
         }
     }

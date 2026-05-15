@@ -14,23 +14,48 @@ final class LibraryStore: ObservableObject {
         .urls(for: .documentDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("library_cache.json")
 
+    /// Throttle auto-refreshes — prevents view re-appearances from constantly stomping library
+    private var lastRefreshAt: Date?
+    private static let refreshCooldown: TimeInterval = 300 // 5 minutes
+
     init() { loadFromDisk() }
 
+    /// Auto-refresh called from view .task — throttled to prevent constant stomping.
+    func refreshIfStale() async {
+        if let last = lastRefreshAt, Date().timeIntervalSince(last) < Self.refreshCooldown {
+            return // recently refreshed, skip
+        }
+        await refresh()
+    }
+
+    /// Explicit refresh from user action (pull-to-refresh button) — always runs.
     func refresh() async {
         guard YTMusicClient.shared.isAuthenticated, !isLoading else { return }
         isLoading = true
         error = nil
+        lastRefreshAt = Date()
         async let songsTask: Void = fetchLibrarySongs()
         do {
             let shells = try await YTMusicClient.shared.fetchLibraryPlaylists()
-            playlists = shells.map { shell in
-                if let cached = playlists.first(where: { $0.id == shell.id }), !cached.tracks.isEmpty {
+            // Preserve existing playlist order — only add new playlists at the end.
+            // Stops the library from "jumping around" when YouTube returns a different order.
+            let existingIds = playlists.map(\.id)
+            let shellById = Dictionary(uniqueKeysWithValues: shells.map { ($0.id, $0) })
+
+            var updated: [Playlist] = []
+            // Keep existing playlists in their current order (if still present in remote)
+            for existing in playlists {
+                if let shell = shellById[existing.id] {
                     var merged = shell
-                    merged.tracks = cached.tracks
-                    return merged
+                    merged.tracks = existing.tracks // preserve cached tracks
+                    updated.append(merged)
                 }
-                return shell
             }
+            // Append new playlists at the end
+            for shell in shells where !existingIds.contains(shell.id) {
+                updated.append(shell)
+            }
+            playlists = updated
             isLoading = false
             await fetchTracksInBackground(for: shells)
         } catch is CancellationError {
@@ -77,8 +102,8 @@ final class LibraryStore: ObservableObject {
                 }
             }
         }
-        // Single update after all tracks fetched — no mid-loop UI churn
-        playlists = updated.sorted { $0.title < $1.title }
+        // Preserve existing order — do NOT re-sort (was causing library "jumping around")
+        playlists = updated
         saveToDisk()
 
         for (playlist, newTracks) in playlistsToAutoUpdate {

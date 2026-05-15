@@ -102,7 +102,7 @@ struct LibraryView: View {
             }
         }
         .preferredColorScheme(.dark)
-        .task { await store.refresh() }
+        .task { await store.refreshIfStale() } // throttled — explicit refresh via toolbar button
         .onAppear { withAnimation { appeared = true } }
     }
 }
