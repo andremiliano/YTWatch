@@ -185,97 +185,109 @@ final class WatchSyncManager: NSObject, ObservableObject {
         })
     }
 
-    /// Process Watch inventory response — fix state and re-sync missing tracks.
-    /// Heavy work runs OFF MainActor to avoid watchdog kill on large catalogs (200+ tracks).
+    /// Max tracks to re-queue per verify call — prevents avalanche
+    private static let maxResyncPerVerify = 50
+
+    /// Process Watch inventory response — fix state and re-sync missing tracks (capped).
+    /// All operations defensive; failures log but don't crash.
     private func handleSyncInventory(watchTrackIds: [String]) {
+        // PHASE 1: Reconcile syncedTrackIds (fast, only Set ops, always safe)
         let watchSet = Set(watchTrackIds)
         let phoneThinksSynced = syncedTrackIds.count
-
-        // 1. Reconcile syncedTrackIds with Watch reality (fast, just Set operations)
         let falseSynced = syncedTrackIds.subtracting(watchSet)
         let untracked = watchSet.subtracting(syncedTrackIds)
         syncedTrackIds.subtract(falseSynced)
         syncedTrackIds.formUnion(untracked)
         saveSyncState()
 
-        // 2. Snapshot data needed for off-main work
-        let snapshotPlaylists = syncedPlaylists
-        let snapshotMetadata = AudioDownloader.shared.trackMetadata
-        let snapshotDownloaded = AudioDownloader.shared.downloadedTracks
-        let alreadyQueuedSet = Set(pendingSyncQueue.map(\.videoId))
-        let transferringSnapshot = transferringTrackIds
+        print("[Sync] Reconciled: phone=\(phoneThinksSynced)→\(syncedTrackIds.count), watch=\(watchSet.count), drift=\(falseSynced.count)")
 
-        // 3. Build re-sync items OFF MainActor (this loop was the watchdog killer)
-        Task.detached(priority: .userInitiated) { [weak self] in
-            var items: [PendingSyncItem] = []
-            var alreadyQueued = alreadyQueuedSet
+        // PHASE 2: Skip re-queue entirely if nothing missing or queue is already full
+        guard !falseSynced.isEmpty else {
+            lastVerifyResult = VerifyResult(
+                phoneThinksSynced: phoneThinksSynced,
+                actuallyOnWatch: watchSet.count,
+                missingOnWatch: 0,
+                resynced: 0,
+                date: Date()
+            )
+            isVerifying = false
+            return
+        }
 
-            // Build lookup once
-            var trackPlaylistMap: [String: (playlistId: String, playlistTitle: String, track: Track)] = [:]
-            for playlist in snapshotPlaylists {
-                for track in playlist.tracks {
-                    trackPlaylistMap[track.videoId] = (playlist.id, playlist.title, track)
-                }
+        // Cap re-queue work — don't try to fix more than maxResyncPerVerify at once
+        let queueRoom = max(0, Self.maxResyncPerVerify - pendingSyncQueue.count)
+        guard queueRoom > 0 else {
+            lastVerifyResult = VerifyResult(
+                phoneThinksSynced: phoneThinksSynced,
+                actuallyOnWatch: watchSet.count,
+                missingOnWatch: falseSynced.count,
+                resynced: 0,
+                date: Date()
+            )
+            isVerifying = false
+            print("[Sync] Verify: queue full, skipping re-queue (will retry on next verify)")
+            return
+        }
+
+        // PHASE 3: Build re-sync items on MainActor in single pass with safety cap
+        var trackPlaylistMap: [String: (playlistId: String, playlistTitle: String, track: Track)] = [:]
+        for playlist in syncedPlaylists {
+            for track in playlist.tracks {
+                trackPlaylistMap[track.videoId] = (playlist.id, playlist.title, track)
             }
+        }
+        let metadata = AudioDownloader.shared.trackMetadata
+        let downloaded = AudioDownloader.shared.downloadedTracks
+        let alreadyQueued = Set(pendingSyncQueue.map(\.videoId))
+        let transferring = transferringTrackIds
 
-            for videoId in falseSynced {
-                guard snapshotDownloaded[videoId] != nil else { continue } // no local file
-                guard !alreadyQueued.contains(videoId) else { continue }
-                guard !transferringSnapshot.contains(videoId) else { continue }
+        var newItems: [PendingSyncItem] = []
+        for videoId in falseSynced.prefix(queueRoom) {
+            guard downloaded[videoId] != nil else { continue }
+            guard !alreadyQueued.contains(videoId) else { continue }
+            guard !transferring.contains(videoId) else { continue }
 
-                let item: PendingSyncItem
-                if let info = trackPlaylistMap[videoId] {
-                    item = PendingSyncItem(
-                        videoId: videoId, title: info.track.title, artist: info.track.artist,
-                        album: info.track.album, durationSeconds: info.track.durationSeconds,
-                        thumbnailURL: info.track.thumbnailURL,
-                        playlistId: info.playlistId, playlistTitle: info.playlistTitle
-                    )
-                } else if let meta = snapshotMetadata[videoId] {
-                    item = PendingSyncItem(
-                        videoId: videoId, title: meta.title, artist: meta.artist,
-                        album: meta.album, durationSeconds: meta.durationSeconds,
-                        thumbnailURL: meta.thumbnailURL,
-                        playlistId: "library", playlistTitle: "Downloads"
-                    )
-                } else {
-                    continue // no metadata
-                }
-
-                items.append(item)
-                alreadyQueued.insert(videoId)
-
-                // Yield occasionally to keep system responsive
-                if items.count % 50 == 0 {
-                    await Task.yield()
-                }
-            }
-
-            // Apply mutations on MainActor in single batch
-            await MainActor.run { [weak self, items] in
-                guard let self else { return }
-                self.pendingSyncQueue.append(contentsOf: items)
-                self.savePendingQueue()
-
-                let result = VerifyResult(
-                    phoneThinksSynced: phoneThinksSynced,
-                    actuallyOnWatch: watchSet.count,
-                    missingOnWatch: falseSynced.count,
-                    resynced: items.count,
-                    date: Date()
+            let item: PendingSyncItem
+            if let info = trackPlaylistMap[videoId] {
+                item = PendingSyncItem(
+                    videoId: videoId, title: info.track.title, artist: info.track.artist,
+                    album: info.track.album, durationSeconds: info.track.durationSeconds,
+                    thumbnailURL: info.track.thumbnailURL,
+                    playlistId: info.playlistId, playlistTitle: info.playlistTitle
                 )
-                self.lastVerifyResult = result
-                self.isVerifying = false
-
-                print("[Sync] Verify: phone=\(phoneThinksSynced) watch=\(watchSet.count) missing=\(falseSynced.count) resyncing=\(items.count)")
-
-                // Start re-sync in batched fashion (drainPendingQueue caps at maxConcurrentSyncTransfers)
-                if !items.isEmpty {
-                    self.drainPendingQueue()
-                }
-                // NOTE: skip pushAllPlaylistIndexes here — too heavy during massive re-sync.
-                // The Watch already has playlist metadata; verify shouldn't trigger bulk push.
+            } else if let meta = metadata[videoId] {
+                item = PendingSyncItem(
+                    videoId: videoId, title: meta.title, artist: meta.artist,
+                    album: meta.album, durationSeconds: meta.durationSeconds,
+                    thumbnailURL: meta.thumbnailURL,
+                    playlistId: "library", playlistTitle: "Downloads"
+                )
+            } else {
+                continue
             }
+            newItems.append(item)
+        }
+
+        // PHASE 4: Apply mutations
+        if !newItems.isEmpty {
+            pendingSyncQueue.append(contentsOf: newItems)
+            savePendingQueue()
+        }
+
+        lastVerifyResult = VerifyResult(
+            phoneThinksSynced: phoneThinksSynced,
+            actuallyOnWatch: watchSet.count,
+            missingOnWatch: falseSynced.count,
+            resynced: newItems.count,
+            date: Date()
+        )
+        isVerifying = false
+        print("[Sync] Verify done: queued \(newItems.count) re-syncs (cap=\(Self.maxResyncPerVerify), drift=\(falseSynced.count))")
+
+        // Trigger one drain to start the batch — drain itself caps at maxConcurrentSyncTransfers (10)
+        if !newItems.isEmpty {
+            drainPendingQueue()
         }
     }
 
@@ -710,10 +722,10 @@ extension WatchSyncManager: WCSessionDelegate {
             for videoId in outstandingVideoIds {
                 self.transferringTrackIds.insert(videoId)
             }
-            self.syncUnsyncedDownloads()
+            // Drain existing queue only — do NOT auto-add new items or push playlists on activation.
+            // Those operations belong in explicit user actions (sync playlist / verify) to avoid
+            // crash avalanches when state is already large.
             self.drainPendingQueue()
-            // Push all playlist indexes so Watch has full state
-            self.pushAllPlaylistIndexes()
         }
     }
 
@@ -724,16 +736,11 @@ extension WatchSyncManager: WCSessionDelegate {
             if reachable {
                 // Fresh connection — clear WiFi-failed so tracks can try WiFi again
                 self.wifiFailedVideoIds.removeAll()
-                // Auto-verify once per app launch to catch sync drift
-                if !self.syncedTrackIds.isEmpty && self.lastVerifyResult == nil {
-                    print("[Sync] Auto-verify: first reachable contact this session")
-                    self.verifySyncAndRepair()
-                } else {
-                    self.drainPendingQueue()
-                }
+                // NO auto-verify — user must explicitly tap Verify & Re-sync.
+                // Auto-firing on every reachability caused crash loops on bad state.
+                self.drainPendingQueue()
             } else {
                 // Watch went unreachable — cancel pending WiFi timeouts
-                // (items stay in queue, will transfer via Bluetooth on reconnect)
                 self.cancelAllWifiTimeouts()
             }
         }
