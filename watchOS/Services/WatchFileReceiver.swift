@@ -343,11 +343,12 @@ final class WatchFileReceiver: NSObject, ObservableObject {
     }
 
     private func upsertPlaylist(_ playlist: Playlist) {
-        // First try matching by id (exact)
+        // ID match → REPLACE (caller is authoritative for that playlist's full state).
+        // File-receive path always passes the FULL augmented playlist, so no loss here.
         if let idx = playlists.firstIndex(where: { $0.id == playlist.id }) {
-            playlists[idx] = mergeTracks(into: playlists[idx], from: playlist)
+            playlists[idx] = playlist
         }
-        // Then check if another playlist has the same normalized title — merge into it
+        // No ID match but same TITLE exists → MERGE into existing (the duplicate fix).
         else if let idx = playlists.firstIndex(where: { Self.normalizeTitle($0.title) == Self.normalizeTitle(playlist.title) }) {
             playlists[idx] = mergeTracks(into: playlists[idx], from: playlist)
         } else {
@@ -358,19 +359,19 @@ final class WatchFileReceiver: NSObject, ObservableObject {
         refreshAvailable()
     }
 
-    /// Batch upsert — saves disk once, refreshes once. Merges by id OR by normalized title.
+    /// Batch upsert — saves disk once, refreshes once.
+    /// ID match = replace (authoritative). Title match (different ID) = merge tracks.
     private func upsertPlaylistsBatch(_ incoming: [Playlist]) {
         for p in incoming {
-            // Match by id first, then by normalized title
             if let idx = playlists.firstIndex(where: { $0.id == p.id }) {
-                playlists[idx] = mergeTracks(into: playlists[idx], from: p)
+                playlists[idx] = p // ID match: authoritative replace
             } else if let idx = playlists.firstIndex(where: { Self.normalizeTitle($0.title) == Self.normalizeTitle(p.title) }) {
-                playlists[idx] = mergeTracks(into: playlists[idx], from: p)
+                playlists[idx] = mergeTracks(into: playlists[idx], from: p) // title match: merge
             } else {
                 playlists.append(p)
             }
         }
-        // Final pass: dedupe any existing same-name playlists
+        // Final pass: dedupe any pre-existing same-name playlists
         consolidateDuplicateTitles()
         savePlaylistsToDisk()
         _cachedTrackIds = nil
