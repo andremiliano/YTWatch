@@ -164,8 +164,9 @@ final class WatchFileReceiver: NSObject, ObservableObject {
     // MARK: - Direct WiFi Download
 
     /// Max concurrent direct downloads on Watch
-    private static let maxWatchDownloads = 2
+    private static let maxWatchDownloads = 3
     @Published var directDownloadCount = 0
+    private var directDownloadQueue: [DirectDownloadPayload] = []
 
     private func handleDirectDownload(_ payload: DirectDownloadPayload) {
         let videoId = payload.track.videoId
@@ -173,38 +174,31 @@ final class WatchFileReceiver: NSObject, ObservableObject {
         // Skip if already have this track
         guard audioURL(for: videoId) == nil else {
             sendDownloadResult(videoId: videoId, success: true)
-            // Still upsert playlist in case metadata changed
             upsertTrackIntoPlaylist(payload)
             return
         }
 
+        // Queue if at capacity
+        if directDownloadCount >= Self.maxWatchDownloads {
+            if !directDownloadQueue.contains(where: { $0.track.videoId == videoId }) {
+                directDownloadQueue.append(payload)
+                print("[Receiver] Queued WiFi download (\(directDownloadQueue.count) waiting): \(payload.track.title)")
+            }
+            return
+        }
+
+        startDirectDownload(payload)
+    }
+
+    private func startDirectDownload(_ payload: DirectDownloadPayload) {
+        let videoId = payload.track.videoId
         receivingCount += 1
         directDownloadCount += 1
-
-        // Update sync progress
         syncingPlaylistName = payload.playlistTitle
         syncTotalCount += 1
 
         Task {
-            defer {
-                Task { @MainActor in
-                    self.receivingCount = max(0, self.receivingCount - 1)
-                    self.directDownloadCount = max(0, self.directDownloadCount - 1)
-                    if self.receivingCount == 0 {
-                        Task { @MainActor in
-                            try? await Task.sleep(nanoseconds: 2_000_000_000)
-                            if self.receivingCount == 0 {
-                                self.syncingPlaylistName = nil
-                                self.syncedTrackCount = 0
-                                self.syncTotalCount = 0
-                            }
-                        }
-                    }
-                }
-            }
-
             do {
-                // Download audio
                 guard let streamURL = URL(string: payload.streamURL) else {
                     throw URLError(.badURL)
                 }
@@ -220,12 +214,11 @@ final class WatchFileReceiver: NSObject, ObservableObject {
                     throw URLError(.badServerResponse)
                 }
 
-                // Save audio file
                 let destURL = Self.audioDirectory.appendingPathComponent("\(videoId).m4a")
                 try? fm.removeItem(at: destURL)
                 try data.write(to: destURL)
 
-                // Download thumbnail if available
+                // Download thumbnail
                 if let thumbURLStr = payload.thumbnailDownloadURL,
                    let thumbURL = URL(string: thumbURLStr) {
                     if let (thumbData, _) = try? await URLSession.shared.data(from: thumbURL),
@@ -236,11 +229,10 @@ final class WatchFileReceiver: NSObject, ObservableObject {
                     }
                 }
 
-                // Update playlist
                 upsertTrackIntoPlaylist(payload)
                 syncedTrackCount += 1
 
-                print("[Receiver] WiFi download ✓ \(payload.track.title)")
+                print("[Receiver] WiFi download ✓ \(payload.track.title) (\(syncedTrackCount)/\(syncTotalCount))")
                 sendDownloadResult(videoId: videoId, success: true)
 
             } catch {
@@ -250,6 +242,35 @@ final class WatchFileReceiver: NSObject, ObservableObject {
 
             _cachedTrackIds = nil
             refreshAvailable()
+
+            // Decrement and process next queued download
+            self.receivingCount = max(0, self.receivingCount - 1)
+            self.directDownloadCount = max(0, self.directDownloadCount - 1)
+            self.processNextDirectDownload()
+
+            if self.receivingCount == 0 {
+                // Clear sync progress after a delay
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if self.receivingCount == 0 {
+                    self.syncingPlaylistName = nil
+                    self.syncedTrackCount = 0
+                    self.syncTotalCount = 0
+                }
+            }
+        }
+    }
+
+    private func processNextDirectDownload() {
+        while directDownloadCount < Self.maxWatchDownloads && !directDownloadQueue.isEmpty {
+            let next = directDownloadQueue.removeFirst()
+            // Skip if already downloaded while queued
+            if audioURL(for: next.track.videoId) != nil {
+                sendDownloadResult(videoId: next.track.videoId, success: true)
+                upsertTrackIntoPlaylist(next)
+                continue
+            }
+            startDirectDownload(next)
+            break
         }
     }
 

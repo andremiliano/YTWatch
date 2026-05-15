@@ -31,6 +31,8 @@ final class WatchSyncManager: NSObject, ObservableObject {
     private var wifiTimeoutTasks: [String: Task<Void, Never>] = [:]
     /// VideoIds that failed WiFi download — forces Bluetooth path until next reachability change
     private var wifiFailedVideoIds: Set<String> = []
+    /// Max tracks in-flight at once (WiFi + Bluetooth combined)
+    private static let maxConcurrentSyncTransfers = 10
 
     struct PendingSyncItem: Codable {
         let videoId: String
@@ -287,10 +289,15 @@ final class WatchSyncManager: NSObject, ObservableObject {
         pendingSyncQueue.removeAll { syncedTrackIds.contains($0.videoId) }
         if pendingSyncQueue.count != beforeCount { savePendingQueue() }
 
+        // Batch limit — don't overwhelm Watch with 200+ concurrent transfers
+        let slotsAvailable = Self.maxConcurrentSyncTransfers - transferringTrackIds.count
+        guard slotsAvailable > 0 else { return }
+
         // Build transfer list — items STAY in queue until confirmed synced
         var toSync: [(track: Track, url: URL, playlistId: String, playlistTitle: String, index: Int)] = []
 
         for (i, item) in pendingSyncQueue.enumerated() {
+            guard toSync.count < slotsAvailable else { break }
             guard !transferringTrackIds.contains(item.videoId) else { continue }
             guard let localURL = AudioDownloader.shared.localURL(for: item.videoId) else { continue }
             let track = Track(
@@ -307,6 +314,8 @@ final class WatchSyncManager: NSObject, ObservableObject {
             transferringTrackIds.insert(item.track.videoId)
         }
         hadActiveSyncs = true
+        let pending = pendingSyncQueue.count - toSync.count
+        if pending > 0 { print("[Sync] Batch \(toSync.count) tracks (\(pending) still queued)") }
 
         // Split: WiFi-failed tracks always go Bluetooth; rest try WiFi if Watch reachable
         let watchReachable = session?.isReachable == true
@@ -592,8 +601,10 @@ final class WatchSyncManager: NSObject, ObservableObject {
             pendingSyncQueue.removeAll { $0.videoId == videoId }
             savePendingQueue()
             saveSyncState()
-            print("[Sync] ✓ WiFi download \(videoId)")
+            print("[Sync] ✓ WiFi download \(videoId) (\(syncedTrackIds.count) total synced)")
             checkSyncCompletion()
+            // Drain next batch — frees a slot for more transfers
+            drainPendingQueue()
         } else {
             // Mark WiFi-failed so drain uses Bluetooth, remove from transferring, re-drain
             print("[Sync] ✗ WiFi download failed \(videoId) — will retry via Bluetooth")
@@ -674,7 +685,13 @@ extension WatchSyncManager: WCSessionDelegate {
             if reachable {
                 // Fresh connection — clear WiFi-failed so tracks can try WiFi again
                 self.wifiFailedVideoIds.removeAll()
-                self.drainPendingQueue()
+                // Auto-verify once per app launch to catch sync drift
+                if !self.syncedTrackIds.isEmpty && self.lastVerifyResult == nil {
+                    print("[Sync] Auto-verify: first reachable contact this session")
+                    self.verifySyncAndRepair()
+                } else {
+                    self.drainPendingQueue()
+                }
             } else {
                 // Watch went unreachable — cancel pending WiFi timeouts
                 // (items stay in queue, will transfer via Bluetooth on reconnect)
@@ -704,8 +721,10 @@ extension WatchSyncManager: WCSessionDelegate {
                 self.pendingSyncQueue.removeAll { $0.videoId == videoId }
                 self.savePendingQueue()
                 self.saveSyncState()
-                print("[Sync] ✓ \(videoId)")
+                print("[Sync] ✓ BT \(videoId) (\(self.syncedTrackIds.count) total synced)")
                 self.checkSyncCompletion()
+                // Drain next batch — frees a slot for more transfers
+                self.drainPendingQueue()
             } else {
                 print("[Sync] ✗ \(videoId): \(errorMsg ?? "unknown")")
             }
