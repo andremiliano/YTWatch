@@ -439,6 +439,27 @@ extension WatchFileReceiver: WCSessionDelegate {
     }
 
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
+        // Handle syncVerify SYNCHRONOUSLY — replyHandler must be called promptly,
+        // dispatching to Task { @MainActor } risks calling it after WCSession invalidates it.
+        if let typeStr = message[WatchMessageKey.type.rawValue] as? String,
+           typeStr == WatchMessageType.syncVerify.rawValue {
+            // Inline directory scan (no MainActor needed — just FileManager)
+            let audioDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Audio", isDirectory: true)
+            let ids: [String]
+            if let files = try? FileManager.default.contentsOfDirectory(at: audioDir, includingPropertiesForKeys: nil) {
+                ids = files.filter { $0.pathExtension == "m4a" }.map { $0.deletingPathExtension().lastPathComponent }
+            } else {
+                ids = []
+            }
+            replyHandler([
+                WatchMessageKey.type.rawValue: WatchMessageType.syncInventory.rawValue,
+                "trackIds": ids
+            ])
+            return
+        }
+
+        // Everything else can go through async handling
         nonisolated(unsafe) let unsafeReply = replyHandler
         let sendableReply: @Sendable ([String: Any]) -> Void = { dict in unsafeReply(dict) }
         handleIncomingMessage(message, replyHandler: sendableReply)
@@ -453,24 +474,12 @@ extension WatchFileReceiver: WCSessionDelegate {
         let typeStr = msg[WatchMessageKey.type.rawValue] as? String
         let videoId = msg["videoId"] as? String
         let payloadB64 = msg[WatchMessageKey.payload.rawValue] as? String
-        let capturedReply = replyHandler
+        _ = replyHandler // syncVerify handled synchronously in delegate; other cases don't need reply
         Task { @MainActor in
             guard let typeStr, let type = WatchMessageType(rawValue: typeStr) else { return }
             switch type {
             case .deleteTrack:
                 if let videoId { self.deleteTrack(videoId: videoId) }
-            case .syncVerify:
-                // Phone asking what tracks we actually have on disk
-                let ids = Array(self.availableTrackIds())
-                let response: [String: Any] = [
-                    WatchMessageKey.type.rawValue: WatchMessageType.syncInventory.rawValue,
-                    "trackIds": ids
-                ]
-                if let reply = capturedReply {
-                    reply(response)
-                } else if WCSession.isSupported() {
-                    try? WCSession.default.updateApplicationContext(response)
-                }
             case .directDownload:
                 // Phone sent us a stream URL — download directly over WiFi
                 if let b64 = payloadB64,

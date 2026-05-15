@@ -168,9 +168,11 @@ final class WatchSyncManager: NSObject, ObservableObject {
         ]
 
         session.sendMessage(msg, replyHandler: { [weak self] reply in
+            // Extract values on callback thread before crossing to MainActor
+            let trackIds = reply["trackIds"] as? [String] ?? []
             Task { @MainActor in
                 guard let self else { return }
-                self.handleSyncInventory(reply)
+                self.handleSyncInventory(watchTrackIds: trackIds)
             }
         }, errorHandler: { [weak self] error in
             Task { @MainActor in
@@ -182,13 +184,8 @@ final class WatchSyncManager: NSObject, ObservableObject {
     }
 
     /// Process Watch inventory response — fix state and re-sync missing tracks.
-    private func handleSyncInventory(_ msg: [String: Any]) {
-        guard let watchIds = msg["trackIds"] as? [String] else {
-            isVerifying = false
-            return
-        }
-
-        let watchSet = Set(watchIds)
+    private func handleSyncInventory(watchTrackIds: [String]) {
+        let watchSet = Set(watchTrackIds)
         let phoneThinksSynced = syncedTrackIds.count
 
         // 1. Remove from syncedTrackIds anything Watch doesn't have
@@ -724,9 +721,7 @@ extension WatchSyncManager: WCSessionDelegate {
             guard let typeStr, let type = WatchMessageType(rawValue: typeStr) else { return }
             switch type {
             case .syncInventory:
-                var msg: [String: Any] = [WatchMessageKey.type.rawValue: typeStr]
-                if let trackIds { msg["trackIds"] = trackIds }
-                self.handleSyncInventory(msg)
+                self.handleSyncInventory(watchTrackIds: trackIds ?? [])
             case .downloadResult:
                 if let videoId { self.handleDirectDownloadResult(videoId: videoId, success: success ?? false) }
             default:
