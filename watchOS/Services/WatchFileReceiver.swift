@@ -34,6 +34,12 @@ final class WatchFileReceiver: NSObject, ObservableObject {
         super.init()
         createDirectories()
         loadPlaylistsFromDisk()
+        // Merge any pre-existing duplicate playlists by title (one-time cleanup on launch)
+        let beforeCount = playlists.count
+        consolidateDuplicateTitles()
+        if playlists.count != beforeCount {
+            savePlaylistsToDisk()
+        }
         refreshAvailable()
         if WCSession.isSupported() {
             WCSession.default.delegate = self
@@ -331,31 +337,110 @@ final class WatchFileReceiver: NSObject, ObservableObject {
             .appendingPathComponent("playlists_cache.json")
     }
 
+    /// Normalize title for duplicate detection (trim + lowercase).
+    private static func normalizeTitle(_ title: String) -> String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
     private func upsertPlaylist(_ playlist: Playlist) {
+        // First try matching by id (exact)
         if let idx = playlists.firstIndex(where: { $0.id == playlist.id }) {
-            playlists[idx] = playlist
+            playlists[idx] = mergeTracks(into: playlists[idx], from: playlist)
+        }
+        // Then check if another playlist has the same normalized title — merge into it
+        else if let idx = playlists.firstIndex(where: { Self.normalizeTitle($0.title) == Self.normalizeTitle(playlist.title) }) {
+            playlists[idx] = mergeTracks(into: playlists[idx], from: playlist)
         } else {
             playlists.append(playlist)
         }
         savePlaylistsToDisk()
-        _cachedTrackIds = nil // invalidate
+        _cachedTrackIds = nil
         refreshAvailable()
     }
 
-    /// Batch upsert — saves disk once, refreshes once. Use when receiving many playlists at once.
+    /// Batch upsert — saves disk once, refreshes once. Merges by id OR by normalized title.
     private func upsertPlaylistsBatch(_ incoming: [Playlist]) {
-        var existingById = Dictionary(uniqueKeysWithValues: playlists.enumerated().map { ($0.element.id, $0.offset) })
         for p in incoming {
-            if let idx = existingById[p.id] {
-                playlists[idx] = p
+            // Match by id first, then by normalized title
+            if let idx = playlists.firstIndex(where: { $0.id == p.id }) {
+                playlists[idx] = mergeTracks(into: playlists[idx], from: p)
+            } else if let idx = playlists.firstIndex(where: { Self.normalizeTitle($0.title) == Self.normalizeTitle(p.title) }) {
+                playlists[idx] = mergeTracks(into: playlists[idx], from: p)
             } else {
-                existingById[p.id] = playlists.count
                 playlists.append(p)
             }
         }
+        // Final pass: dedupe any existing same-name playlists
+        consolidateDuplicateTitles()
         savePlaylistsToDisk()
         _cachedTrackIds = nil
         refreshAvailable()
+    }
+
+    /// Merge tracks from source into target. Preserves target's id+title, adds unique videoIds.
+    /// Uses target's thumbnail if present, else source's.
+    private func mergeTracks(into target: Playlist, from source: Playlist) -> Playlist {
+        var combined = target.tracks
+        let existingIds = Set(target.tracks.map(\.videoId))
+        for track in source.tracks where !existingIds.contains(track.videoId) {
+            combined.append(track)
+        }
+        let thumb: String?
+        if let t = target.thumbnailURL, !t.isEmpty {
+            thumb = t
+        } else {
+            thumb = source.thumbnailURL
+        }
+        return Playlist(
+            id: target.id, title: target.title, subtitle: target.subtitle,
+            thumbnailURL: thumb, tracks: combined
+        )
+    }
+
+    /// Walks playlist list and merges any with the same normalized title.
+    /// Called on launch and after batch upserts to clean up legacy duplicates.
+    func consolidateDuplicateTitles() {
+        var grouped: [String: [Int]] = [:]
+        for (idx, p) in playlists.enumerated() {
+            grouped[Self.normalizeTitle(p.title), default: []].append(idx)
+        }
+        guard grouped.values.contains(where: { $0.count > 1 }) else { return }
+
+        var result: [Playlist] = []
+        var processedTitles = Set<String>()
+        for p in playlists {
+            let key = Self.normalizeTitle(p.title)
+            if processedTitles.contains(key) { continue }
+            processedTitles.insert(key)
+
+            let allWithName = playlists.filter { Self.normalizeTitle($0.title) == key }
+            if allWithName.count == 1 {
+                result.append(p)
+            } else {
+                // Merge all — keep first playlist's id/title, dedupe tracks, prefer first non-empty thumb
+                let first = allWithName[0]
+                var combinedTracks = first.tracks
+                var added = Set(first.tracks.map(\.videoId))
+                var thumb = first.thumbnailURL
+                for other in allWithName.dropFirst() {
+                    for track in other.tracks where !added.contains(track.videoId) {
+                        combinedTracks.append(track)
+                        added.insert(track.videoId)
+                    }
+                    if (thumb?.isEmpty ?? true), let t = other.thumbnailURL, !t.isEmpty {
+                        thumb = t
+                    }
+                }
+                result.append(Playlist(
+                    id: first.id, title: first.title, subtitle: first.subtitle,
+                    thumbnailURL: thumb, tracks: combinedTracks
+                ))
+            }
+        }
+        if result.count != playlists.count {
+            print("[Receiver] Merged \(playlists.count - result.count) duplicate playlists by title")
+            playlists = result
+        }
     }
 
     func deleteTrack(videoId: String) {
