@@ -628,9 +628,10 @@ final class YTMusicClient: NSObject, ObservableObject {
 
     func fetchPlaylistTracks(playlistId: String) async throws -> [Track] {
         // MPREb_ = album release IDs — use as-is (no VL prefix)
+        // MPSP*   = podcast shows/episodes — use as-is (no VL prefix)
         // Everything else (PL, RDAMPL, etc.) needs VL prefix for the browse API
         let browseId: String
-        if playlistId.hasPrefix("VL") || playlistId.hasPrefix("MPREb_") {
+        if playlistId.hasPrefix("VL") || playlistId.hasPrefix("MPREb_") || playlistId.hasPrefix("MPSP") {
             browseId = playlistId
         } else {
             browseId = "VL\(playlistId)"
@@ -1649,12 +1650,24 @@ final class YTMusicClient: NSObject, ObservableObject {
         let headerArtist = extractHeaderArtist(from: json)
 
         var tracks: [Track] = []
+        var seenVideoIds = Set<String>()
 
         func traverse(_ obj: Any, depth: Int = 0) {
             guard depth < 25 else { return }
             if let dict = obj as? [String: Any] {
+                // Music tracks
                 if let renderer = dict["musicResponsiveListItemRenderer"] as? [String: Any] {
-                    if let t = parseTrackRenderer(renderer, fallbackArtist: headerArtist) { tracks.append(t) }
+                    if let t = parseTrackRenderer(renderer, fallbackArtist: headerArtist),
+                       seenVideoIds.insert(t.videoId).inserted {
+                        tracks.append(t)
+                    }
+                }
+                // Podcast episodes (different renderer type)
+                if let renderer = dict["musicMultiRowListItemRenderer"] as? [String: Any] {
+                    if let t = parsePodcastEpisodeRenderer(renderer, fallbackShow: headerArtist),
+                       seenVideoIds.insert(t.videoId).inserted {
+                        tracks.append(t)
+                    }
                 }
                 for v in dict.values { traverse(v, depth: depth + 1) }
             } else if let arr = obj as? [Any] {
@@ -1664,6 +1677,78 @@ final class YTMusicClient: NSObject, ObservableObject {
         traverse(json)
 
         return tracks
+    }
+
+    /// Parse a podcast episode from musicMultiRowListItemRenderer.
+    /// Episodes have videoIds and play via the same watch endpoint as music, so
+    /// download/playback work identically once the videoId is extracted.
+    private func parsePodcastEpisodeRenderer(_ r: [String: Any], fallbackShow: String?) -> Track? {
+        // Title
+        let titleObj = r["title"] as? [String: Any]
+        let titleRuns = titleObj?["runs"] as? [[String: Any]]
+        let title = titleRuns?.compactMap { $0["text"] as? String }.joined() ?? ""
+        guard !title.isEmpty else { return nil }
+
+        // Show name from subtitle (e.g. "Show Name • Mar 15")
+        let subtitleObj = r["subtitle"] as? [String: Any]
+        let subtitleRuns = subtitleObj?["runs"] as? [[String: Any]] ?? []
+        var show: String?
+        for run in subtitleRuns {
+            guard let text = run["text"] as? String,
+                  text != " • " && text != ", " else { continue }
+            if let nav = run["navigationEndpoint"] as? [String: Any],
+               let browse = nav["browseEndpoint"] as? [String: Any],
+               let id = browse["browseId"] as? String,
+               id.hasPrefix("UC") || id.hasPrefix("MPSP") {
+                show = text
+                break
+            }
+        }
+        if show == nil {
+            // Fallback: first non-separator text in subtitle
+            show = subtitleRuns
+                .compactMap { $0["text"] as? String }
+                .first { !$0.contains("•") && !$0.contains(",") && !$0.isEmpty }
+        }
+        let artist = show ?? fallbackShow ?? "Podcast"
+
+        // videoId — try playButton, fallback to onTap
+        var videoId: String?
+        if let playButton = r["playButton"] as? [String: Any],
+           let renderer = playButton["musicPlayButtonRenderer"] as? [String: Any],
+           let nav = renderer["playNavigationEndpoint"] as? [String: Any],
+           let watch = nav["watchEndpoint"] as? [String: Any] {
+            videoId = watch["videoId"] as? String
+        }
+        if videoId == nil,
+           let onTap = r["onTap"] as? [String: Any],
+           let watch = onTap["watchEndpoint"] as? [String: Any] {
+            videoId = watch["videoId"] as? String
+        }
+        guard let vid = videoId else { return nil }
+
+        // Duration — appears in description or footer
+        var durationSeconds = 0
+        if let secondTitle = r["secondTitle"] as? [String: Any],
+           let runs = secondTitle["runs"] as? [[String: Any]] {
+            for run in runs {
+                if let text = run["text"] as? String {
+                    let parsed = parseDuration(text)
+                    if parsed > 0 { durationSeconds = parsed; break }
+                }
+            }
+        }
+
+        // Thumbnail
+        let thumbRenderer = (r["thumbnail"] as? [String: Any])?["musicThumbnailRenderer"] as? [String: Any]
+        let thumbObj = thumbRenderer?["thumbnail"] as? [String: Any]
+        let thumbs = thumbObj?["thumbnails"] as? [[String: Any]]
+        let thumbnailURL = thumbs?.last?["url"] as? String
+
+        return Track(
+            id: vid, videoId: vid, title: title, artist: artist,
+            album: show, durationSeconds: durationSeconds, thumbnailURL: thumbnailURL
+        )
     }
 
     private func extractHeaderArtist(from json: [String: Any]) -> String? {
