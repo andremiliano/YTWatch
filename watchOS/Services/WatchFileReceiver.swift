@@ -444,6 +444,32 @@ final class WatchFileReceiver: NSObject, ObservableObject {
         }
     }
 
+    /// Heal old-version downloads that were saved with durationSeconds=0.
+    /// Called when the player reads a real duration from the audio file.
+    func updateTrackDuration(videoId: String, duration: Int) {
+        guard duration > 0 else { return }
+        var changed = false
+        for pIdx in playlists.indices {
+            for tIdx in playlists[pIdx].tracks.indices
+            where playlists[pIdx].tracks[tIdx].videoId == videoId
+                && playlists[pIdx].tracks[tIdx].durationSeconds != duration {
+                let old = playlists[pIdx].tracks[tIdx]
+                // Only fill in when missing (0) — never override a real API-sourced value
+                guard old.durationSeconds <= 0 else { continue }
+                playlists[pIdx].tracks[tIdx] = Track(
+                    id: old.id, videoId: old.videoId, title: old.title, artist: old.artist,
+                    album: old.album, durationSeconds: duration, thumbnailURL: old.thumbnailURL,
+                    artistId: old.artistId, albumId: old.albumId
+                )
+                changed = true
+            }
+        }
+        if changed {
+            savePlaylistsToDisk()
+            refreshAvailable()
+        }
+    }
+
     func deleteTrack(videoId: String) {
         let audio = Self.audioDirectory.appendingPathComponent("\(videoId).m4a")
         let thumb = Self.thumbnailDirectory.appendingPathComponent("\(videoId).jpg")

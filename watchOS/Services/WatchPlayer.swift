@@ -94,6 +94,12 @@ final class WatchPlayer: ObservableObject {
     /// The known duration from track metadata (API-sourced, accurate).
     /// Separate from `duration` which may be overwritten by AVPlayer container duration.
     private var knownTrackDuration: Double = 0
+    /// Guards against double-advance — a finishing track can trigger the end
+    /// notification, duration detection, and stall detection all at once.
+    private var finishedGeneration: Int = -1
+    /// Bounded skip counter — prevents infinite recursion/crash when nothing is playable.
+    private var consecutiveFailures: Int = 0
+    private static let maxConsecutiveFailures = 40
 
     // MARK: - Session setup
 
@@ -156,8 +162,15 @@ final class WatchPlayer: ObservableObject {
 
     func load(playlist: Playlist, startAt index: Int = 0) {
         currentPlaylist = playlist
+        consecutiveFailures = 0
         buildQueue(startingAt: index)
-        playTrack(at: index)
+        guard !playQueue.isEmpty else {
+            error = "No downloaded tracks in \(playlist.title)"
+            stopPlayback()
+            return
+        }
+        currentIndex = playQueue[queuePosition]
+        playTrack(at: currentIndex)
     }
 
     func play() {
@@ -207,17 +220,10 @@ final class WatchPlayer: ObservableObject {
     func toggleShuffle() {
         isShuffled.toggle()
         haptic(.click)
-        guard let playlist = currentPlaylist else { return }
-        let current = currentIndex
-        if isShuffled {
-            var rest = Array(0..<playlist.tracks.count).filter { $0 != current }
-            rest.shuffle()
-            playQueue = [current] + rest
-            queuePosition = 0
-        } else {
-            playQueue = Array(0..<playlist.tracks.count)
-            queuePosition = current
-        }
+        guard currentPlaylist != nil else { return }
+        // Rebuild around the current track — buildQueue filters to available tracks
+        // and keeps the current song at the front, so shuffle never gets "stuck".
+        buildQueue(startingAt: currentIndex)
     }
 
     func toggleRepeat() {
@@ -316,46 +322,68 @@ final class WatchPlayer: ObservableObject {
 
     // MARK: - Private
 
+    /// Indices of tracks in `playlist` whose audio file is actually on disk.
+    /// Building the queue from these means shuffle/next never land on a missing
+    /// (e.g. old-version) download.
+    private func availableIndices(in playlist: Playlist) -> [Int] {
+        playlist.tracks.indices.filter {
+            WatchFileReceiver.shared.isAvailable(playlist.tracks[$0].videoId)
+        }
+    }
+
     private func buildQueue(startingAt index: Int) {
-        guard let playlist = currentPlaylist else { return }
-        let count = playlist.tracks.count
+        guard let playlist = currentPlaylist else {
+            playQueue = []; queuePosition = 0; return
+        }
+        let avail = availableIndices(in: playlist)
+        guard !avail.isEmpty else {
+            playQueue = []; queuePosition = 0; return
+        }
+        // Start on a track that actually has a file
+        let start = avail.contains(index) ? index : avail[0]
         if isShuffled {
-            var rest = Array(0..<count).filter { $0 != index }
+            var rest = avail.filter { $0 != start }
             rest.shuffle()
-            playQueue = [index] + rest
+            playQueue = [start] + rest
             queuePosition = 0
         } else {
-            playQueue = Array(0..<count)
-            queuePosition = index
+            playQueue = avail
+            queuePosition = avail.firstIndex(of: start) ?? 0
         }
     }
 
     private func advanceQueue(forward: Bool) {
-        guard !playQueue.isEmpty else { return }
+        guard let playlist = currentPlaylist else { return }
+        guard !playQueue.isEmpty else { playNextPlaylist(); return }
+
         if forward {
             let next = queuePosition + 1
             if next < playQueue.count {
                 queuePosition = next
-                currentIndex = playQueue[queuePosition]
-                playTrack(at: currentIndex)
             } else if repeatMode == .all {
-                if let playlist = currentPlaylist {
-                    buildQueue(startingAt: isShuffled ? Int.random(in: 0..<playlist.tracks.count) : 0)
-                }
-                currentIndex = playQueue[queuePosition]
-                playTrack(at: currentIndex)
+                // Restart the same playlist — reshuffle if shuffled
+                let restart = isShuffled ? (availableIndices(in: playlist).randomElement() ?? playQueue[0]) : playQueue[0]
+                buildQueue(startingAt: restart)
+                guard !playQueue.isEmpty else { playNextPlaylist(); return }
             } else {
-                // End of queue in .none mode — move to next playlist
+                // End of queue in .none mode — move to next album/playlist
                 playNextPlaylist()
+                return
             }
         } else {
             let prev = queuePosition - 1
             if prev >= 0 {
                 queuePosition = prev
-                currentIndex = playQueue[queuePosition]
-                playTrack(at: currentIndex)
+            } else {
+                return // already at first track
             }
         }
+
+        guard queuePosition >= 0, queuePosition < playQueue.count else {
+            playNextPlaylist(); return
+        }
+        currentIndex = playQueue[queuePosition]
+        playTrack(at: currentIndex)
     }
 
     private func playTrack(at index: Int) {
@@ -364,17 +392,14 @@ final class WatchPlayer: ObservableObject {
 
         let track = playlist.tracks[index]
         guard let url = WatchFileReceiver.shared.audioURL(for: track.videoId) else {
-            error = "Track not downloaded: \(track.title)"
-            // Skip to next available track
-            skipUnavailable(from: index, forward: true)
+            handleUnplayable(track: track, reason: "not downloaded")
             return
         }
 
         // Verify file is not empty/corrupt
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
         guard fileSize > 1000 else {
-            error = "Track file corrupt: \(track.title)"
-            skipUnavailable(from: index, forward: true)
+            handleUnplayable(track: track, reason: "file corrupt")
             return
         }
 
@@ -413,22 +438,25 @@ final class WatchPlayer: ObservableObject {
         activateSessionAndPlay(url: url, generation: gen)
     }
 
-    private func skipUnavailable(from index: Int, forward: Bool) {
-        guard let playlist = currentPlaylist else { return }
-        let step = forward ? 1 : -1
-        var nextIdx = index + step
-        var tried = 0
-        while nextIdx >= 0 && nextIdx < playlist.tracks.count && tried < playlist.tracks.count {
-            let track = playlist.tracks[nextIdx]
-            if WatchFileReceiver.shared.isAvailable(track.videoId) {
-                playTrack(at: nextIdx)
-                return
-            }
-            nextIdx += step
-            tried += 1
+    /// Called when a track can't be played. Bounded so it never infinitely
+    /// recurses or crashes when many/all tracks are missing.
+    private func handleUnplayable(track: Track, reason: String) {
+        consecutiveFailures += 1
+        print("[Player] Skip \(track.title): \(reason) (\(consecutiveFailures)/\(Self.maxConsecutiveFailures))")
+        guard consecutiveFailures < Self.maxConsecutiveFailures else {
+            consecutiveFailures = 0
+            error = "No playable tracks available"
+            stopPlayback()
+            return
         }
-        // No available tracks — try shuffle to other playlists
-        playNextPlaylist()
+        advanceQueue(forward: true)
+    }
+
+    private func stopPlayback() {
+        tearDownPlayer()
+        isPlaying = false
+        currentTime = 0
+        updateNowPlaying()
     }
 
     private func beginPlayback(url: URL, generation: Int) {
@@ -463,10 +491,15 @@ final class WatchPlayer: ObservableObject {
                 case .readyToPlay:
                     self.statusObservation?.invalidate()
                     self.statusObservation = nil
-                    // Prefer Track metadata duration; fall back to AVPlayer if unknown
-                    // Never overwrite known metadata duration with container duration
-                    if self.knownTrackDuration <= 0 && self.duration <= 0, !dur.isNaN, dur > 0 {
+                    self.consecutiveFailures = 0 // successful start resets the skip guard
+                    // Prefer Track metadata duration; fall back to AVPlayer if unknown.
+                    // Old-version downloads have durationSeconds=0 — heal them by reading
+                    // the asset's real duration and persisting it so the UI + end detection work.
+                    if self.knownTrackDuration <= 0, !dur.isNaN, dur > 0 {
                         self.duration = dur
+                        if let vid = self.currentTrack?.videoId {
+                            WatchFileReceiver.shared.updateTrackDuration(videoId: vid, duration: Int(dur.rounded()))
+                        }
                     }
                     self.player?.play()
                     self.player?.volume = self.currentVolume
@@ -484,11 +517,9 @@ final class WatchPlayer: ObservableObject {
                     self.statusObservation?.invalidate()
                     self.statusObservation = nil
                     let msg = errMsg ?? "Playback failed"
-                    self.error = msg
-                    self.isPlaying = false
                     print("[Player] \u{2717} \(self.currentTrack?.title ?? "?"): \(msg)")
-                    // Auto-skip to next track on failure
-                    self.advanceQueue(forward: true)
+                    // Auto-skip on failure, bounded to avoid infinite loops on bad catalogs
+                    self.handleUnplayable(track: self.currentTrack ?? Track(id: "", videoId: "", title: "?", artist: "", durationSeconds: 0), reason: "load failed")
                 default:
                     break
                 }
@@ -562,6 +593,11 @@ final class WatchPlayer: ObservableObject {
 
     @objc private func playerDidFinish() {
         Task { @MainActor in
+            // Guard: the finishing track can fire the end notification, duration
+            // detection, and stall detection all at once. Only handle it once.
+            guard self.finishedGeneration != self.playbackGeneration else { return }
+            self.finishedGeneration = self.playbackGeneration
+
             // Sleep timer: end-of-track mode
             if self.isSleepTimerEndOfTrack {
                 self.cancelSleepTimer()
@@ -572,48 +608,55 @@ final class WatchPlayer: ObservableObject {
 
             switch self.repeatMode {
             case .one:
+                // Replay same track (playTrack bumps generation so it can finish again)
                 self.playTrack(at: self.currentIndex)
-            case .all:
+            case .all, .none:
+                // advanceQueue handles end-of-queue: .all restarts, .none moves to next album
                 self.advanceQueue(forward: true)
-            case .none:
-                let next = self.queuePosition + 1
-                if next < self.playQueue.count {
-                    self.queuePosition = next
-                    self.currentIndex = self.playQueue[self.queuePosition]
-                    self.playTrack(at: self.currentIndex)
-                } else {
-                    self.playNextPlaylist()
-                }
             }
         }
     }
 
     private func playNextPlaylist() {
-        let allPlaylists = WatchFileReceiver.shared.availablePlaylists
-        guard !allPlaylists.isEmpty else {
-            isPlaying = false
-            currentTime = 0
-            updateNowPlaying()
-            return
-        }
+        let all = WatchFileReceiver.shared.availablePlaylists
+        guard !all.isEmpty else { stopPlayback(); return }
 
         let currentId = currentPlaylist?.id
-        let currentIdx = allPlaylists.firstIndex(where: { $0.id == currentId }) ?? -1
-        let nextIdx = (currentIdx + 1) % allPlaylists.count
+        let startIdx = all.firstIndex(where: { $0.id == currentId }) ?? -1
 
-        let nextPlaylist = allPlaylists[nextIdx]
+        // Walk forward looking for the next album/playlist that has playable tracks.
+        for offset in 1...all.count {
+            let idx = ((startIdx < 0 ? 0 : startIdx) + offset) % all.count
+            let candidate = all[idx]
 
-        // If we looped back to same playlist (only 1 available), stop unless repeat all
-        if nextPlaylist.id == currentId && repeatMode != .all {
-            isPlaying = false
-            currentTime = 0
-            updateNowPlaying()
-            return
+            if candidate.id == currentId {
+                // Wrapped all the way back to the current playlist.
+                if repeatMode == .all {
+                    currentPlaylist = candidate
+                    consecutiveFailures = 0
+                    buildQueue(startingAt: 0)
+                    if !playQueue.isEmpty {
+                        currentIndex = playQueue[queuePosition]
+                        playTrack(at: currentIndex)
+                        return
+                    }
+                }
+                break
+            }
+
+            if !availableIndices(in: candidate).isEmpty {
+                currentPlaylist = candidate
+                consecutiveFailures = 0
+                buildQueue(startingAt: availableIndices(in: candidate).first ?? 0)
+                if !playQueue.isEmpty {
+                    currentIndex = playQueue[queuePosition]
+                    playTrack(at: currentIndex)
+                    return
+                }
+            }
         }
-
-        currentPlaylist = nextPlaylist
-        buildQueue(startingAt: 0)
-        playTrack(at: 0)
+        // Nothing playable anywhere — stop cleanly.
+        stopPlayback()
     }
 
     // MARK: - Now Playing + Remote Controls
