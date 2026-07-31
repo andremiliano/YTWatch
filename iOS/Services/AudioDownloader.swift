@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import AVFoundation
 
 // Thread-safe storage for background session completion handler — must be outside @MainActor
 private final class BGHandlerBox: @unchecked Sendable {
@@ -24,6 +25,11 @@ final class AudioDownloader: NSObject, ObservableObject {
     @Published var totalQueuedCount = 0
     @Published var completedInBatch = 0
     @Published var estimatedSecondsRemaining: Double?
+
+    // Repair
+    @Published var isRepairing = false
+    @Published var repairProgress: Double = 0
+    @Published var lastRepairSummary: String?
 
     private(set) var trackMetadata: [String: TrackMeta] = [:]
 
@@ -494,6 +500,115 @@ final class AudioDownloader: NSObject, ObservableObject {
 
     func deleteAllDownloads(for videoIds: [String]) {
         for id in videoIds { deleteDownload(videoId: id) }
+    }
+
+    // MARK: - Repair Corrupted Downloads
+
+    /// Scan every downloaded file, delete corrupt/truncated ones from phone AND Watch,
+    /// then re-download them (which re-syncs to the Watch automatically).
+    func repairCorruptedDownloads() async {
+        guard !isRepairing else { return }
+        isRepairing = true
+        repairProgress = 0
+        lastRepairSummary = nil
+
+        let ids = Array(downloadedTracks.keys)
+        guard !ids.isEmpty else {
+            lastRepairSummary = "No downloads to check"
+            isRepairing = false
+            return
+        }
+
+        // Snapshot id→url map so child tasks don't touch @MainActor state
+        let urlMap = downloadedTracks
+
+        // Detect corrupt files with bounded concurrency
+        var corrupt: [String] = []
+        var checked = 0
+        await withTaskGroup(of: (String, Bool).self) { group in
+            var iterator = ids.makeIterator()
+            func launch() {
+                while let id = iterator.next() {
+                    guard let url = urlMap[id] else { continue }
+                    group.addTask { (id, await Self.isAudioFileCorrupt(url)) }
+                    return
+                }
+            }
+            for _ in 0..<5 { launch() }
+            for await (id, isBad) in group {
+                if isBad { corrupt.append(id) }
+                checked += 1
+                repairProgress = Double(checked) / Double(ids.count)
+                launch()
+            }
+        }
+
+        guard !corrupt.isEmpty else {
+            lastRepairSummary = "All \(ids.count) files healthy ✓"
+            isRepairing = false
+            return
+        }
+
+        // Build videoId → (Track, playlist) map so re-download re-syncs to the right playlist
+        var lookup: [String: (track: Track, playlistId: String, playlistTitle: String)] = [:]
+        for pl in LibraryStore.shared.playlists {
+            for t in pl.tracks where lookup[t.videoId] == nil {
+                lookup[t.videoId] = (t, pl.id, pl.title)
+            }
+        }
+        for t in LibraryStore.shared.librarySongs where lookup[t.videoId] == nil {
+            lookup[t.videoId] = (t, "library", "Downloads")
+        }
+
+        // Delete corrupt files (phone + Watch) and re-download
+        var redownloading = 0
+        for id in corrupt {
+            if let url = downloadedTracks[id] { try? FileManager.default.removeItem(at: url) }
+            downloadedTracks.removeValue(forKey: id)
+            downloadProgress.removeValue(forKey: id)
+            downloadErrors.removeValue(forKey: id)
+            downloadingVideoIds.remove(id)
+            // Remove the (possibly-corrupt) Watch copy + clear its synced state
+            WatchSyncManager.shared.removeFromWatch(videoId: id)
+
+            // Re-download — prefer full Track from library, fall back to stored metadata
+            if let info = lookup[id] {
+                let track = info.track
+                let pid = info.playlistId, ptitle = info.playlistTitle
+                Task { _ = try? await self.download(track: track, playlistId: pid, playlistTitle: ptitle) }
+                redownloading += 1
+            } else if let meta = trackMetadata[id] {
+                let track = Track(
+                    id: id, videoId: id, title: meta.title, artist: meta.artist,
+                    album: meta.album, durationSeconds: meta.durationSeconds, thumbnailURL: meta.thumbnailURL
+                )
+                Task { _ = try? await self.download(track: track, playlistId: "library", playlistTitle: "Downloads") }
+                redownloading += 1
+            } else {
+                // No metadata to re-download from — just drop it
+                trackMetadata.removeValue(forKey: id)
+            }
+        }
+        saveTrackMetadata()
+
+        lastRepairSummary = "Fixed \(corrupt.count) corrupt · re-downloading \(redownloading)"
+        isRepairing = false
+    }
+
+    /// A file is corrupt if it's truncated (too small) or AVFoundation can't play it.
+    nonisolated static func isAudioFileCorrupt(_ url: URL) async -> Bool {
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+        if size < 10_000 { return true } // < 10KB — empty or truncated download
+        let asset = AVURLAsset(url: url)
+        do {
+            let playable = try await asset.load(.isPlayable)
+            let duration = try await asset.load(.duration)
+            if !playable { return true }
+            if duration.seconds.isNaN || duration.seconds <= 0 { return true }
+            return false
+        } catch {
+            return true // couldn't load = corrupt
+        }
     }
 
     func deleteAllDownloads() {

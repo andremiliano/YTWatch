@@ -202,6 +202,54 @@ struct SettingsView: View {
                             if !downloader.downloadedTracks.isEmpty {
                                 Divider().background(Color.appBorder).padding(.horizontal, 14)
 
+                                // Repair corrupted downloads
+                                Button {
+                                    Task { await downloader.repairCorruptedDownloads() }
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        if downloader.isRepairing {
+                                            ProgressView()
+                                                .tint(Color.ytRed)
+                                                .scaleEffect(0.7)
+                                                .frame(width: 28, height: 28)
+                                        } else {
+                                            Image(systemName: "wrench.and.screwdriver")
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundStyle(.blue)
+                                                .frame(width: 28, height: 28)
+                                                .background(Color.blue.opacity(0.12))
+                                                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                        }
+
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(downloader.isRepairing ? "Checking downloads…" : "Repair Downloads")
+                                                .font(.system(size: 15))
+                                                .foregroundStyle(.white)
+                                            if downloader.isRepairing {
+                                                Text("\(Int(downloader.repairProgress * 100))% scanned")
+                                                    .font(.system(size: 11))
+                                                    .foregroundStyle(Color.appFaint)
+                                            } else if let summary = downloader.lastRepairSummary {
+                                                Text(summary)
+                                                    .font(.system(size: 11))
+                                                    .foregroundStyle(summary.contains("Fixed") ? .orange : Color.appFaint)
+                                            } else {
+                                                Text("Find & re-download corrupt files")
+                                                    .font(.system(size: 11))
+                                                    .foregroundStyle(Color.appFaint)
+                                            }
+                                        }
+
+                                        Spacer()
+                                    }
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 13)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(downloader.isRepairing)
+
+                                Divider().background(Color.appBorder).padding(.horizontal, 14)
+
                                 Button(action: { showClearAllConfirm = true }) {
                                     HStack(spacing: 12) {
                                         Image(systemName: "trash")

@@ -470,6 +470,16 @@ final class WatchFileReceiver: NSObject, ObservableObject {
         }
     }
 
+    /// Delete ONLY the audio file (keep the playlist entry) when playback finds it corrupt.
+    /// The track stays listed but shows as unavailable, so Verify & Re-sync will re-send it.
+    func deleteCorruptAudioFile(videoId: String) {
+        let audio = Self.audioDirectory.appendingPathComponent("\(videoId).m4a")
+        try? fm.removeItem(at: audio)
+        _cachedTrackIds = nil
+        refreshAvailable()
+        print("[Receiver] Removed corrupt file \(videoId) — will re-sync on next verify")
+    }
+
     func deleteTrack(videoId: String) {
         let audio = Self.audioDirectory.appendingPathComponent("\(videoId).m4a")
         let thumb = Self.thumbnailDirectory.appendingPathComponent("\(videoId).jpg")

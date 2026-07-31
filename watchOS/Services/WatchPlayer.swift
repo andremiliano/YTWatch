@@ -517,9 +517,15 @@ final class WatchPlayer: ObservableObject {
                     self.statusObservation?.invalidate()
                     self.statusObservation = nil
                     let msg = errMsg ?? "Playback failed"
-                    print("[Player] \u{2717} \(self.currentTrack?.title ?? "?"): \(msg)")
+                    let failed = self.currentTrack
+                    print("[Player] \u{2717} \(failed?.title ?? "?"): \(msg)")
+                    // The file is corrupt — delete it so it stops crashing playback and
+                    // gets re-synced from the phone on the next Verify & Re-sync.
+                    if let vid = failed?.videoId, !vid.isEmpty {
+                        WatchFileReceiver.shared.deleteCorruptAudioFile(videoId: vid)
+                    }
                     // Auto-skip on failure, bounded to avoid infinite loops on bad catalogs
-                    self.handleUnplayable(track: self.currentTrack ?? Track(id: "", videoId: "", title: "?", artist: "", durationSeconds: 0), reason: "load failed")
+                    self.handleUnplayable(track: failed ?? Track(id: "", videoId: "", title: "?", artist: "", durationSeconds: 0), reason: "load failed")
                 default:
                     break
                 }
