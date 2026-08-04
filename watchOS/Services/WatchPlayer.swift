@@ -85,6 +85,7 @@ final class WatchPlayer: ObservableObject {
     private var wasPlayingBeforeInterruption = false
     private var timeObserverTick = 0
     private var statusObservation: NSKeyValueObservation?
+    private var endObserver: NSObjectProtocol?
     // Incremented each time we start a new track — guards against stale async callbacks
     private var playbackGeneration: Int = 0
     private var sessionActivated = false
@@ -178,6 +179,10 @@ final class WatchPlayer: ObservableObject {
             // Player was torn down — re-initialize if we have a current track
             if let track = currentTrack,
                let url = WatchFileReceiver.shared.audioURL(for: track.videoId) {
+                knownTrackDuration = track.durationSeconds > 0 ? Double(track.durationSeconds) : 0
+                if duration <= 0 { duration = knownTrackDuration }
+                lastObservedTime = -1
+                stallTicks = 0
                 playbackGeneration += 1
                 activateSessionAndPlay(url: url, generation: playbackGeneration)
             }
@@ -471,14 +476,16 @@ final class WatchPlayer: ObservableObject {
         avPlayer.automaticallyWaitsToMinimizeStalling = false
         player = avPlayer
 
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(playerDidFinish),
-            name: .AVPlayerItemDidPlayToEndTime,
-            object: item
-        )
-
         let capturedGen = generation
+
+        // Block-based end observer that captures THIS item's generation, so the end
+        // notification, duration detection, and stall detection all dedupe against the
+        // same generation — no more double-advance / skipped tracks.
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.handleTrackFinished(generation: capturedGen) }
+        }
         statusObservation = item.observe(\.status, options: [.new, .initial]) { [weak self] observedItem, _ in
             let status = observedItem.status
             let dur = observedItem.duration.seconds
@@ -551,13 +558,19 @@ final class WatchPlayer: ObservableObject {
                     needsNowPlayingUpdate = true
                 }
 
-                // Duration-based end detection: if we know the real track duration
-                // (from API metadata), skip as soon as we pass it — don't wait for
-                // AVPlayer to play through container padding silence.
+                // Duration-based end detection: only skip early when the container is
+                // meaningfully LONGER than the real track duration (i.e. there's trailing
+                // silence padding). If the container matches, let it play to the natural
+                // end (the end notification handles it) — this avoids cutting songs off
+                // early when metadata duration is slightly short.
                 if self.isPlaying && self.knownTrackDuration > 0 && t >= self.knownTrackDuration - 0.3 {
-                    print("[Player] Reached known duration \(String(format: "%.1f", self.knownTrackDuration))s at \(String(format: "%.1f", t))s, advancing")
-                    self.playerDidFinish()
-                    return
+                    let containerDur = self.playerItem?.duration.seconds ?? .nan
+                    let hasPadding = !containerDur.isNaN && containerDur > self.knownTrackDuration + 2
+                    if hasPadding {
+                        print("[Player] Known duration \(String(format: "%.1f", self.knownTrackDuration))s reached (container \(String(format: "%.1f", containerDur))s has padding), advancing")
+                        self.handleTrackFinished(generation: capturedGen)
+                        return
+                    }
                 }
 
                 // Stall detection: if time stops advancing while playing, audio ended
@@ -568,7 +581,7 @@ final class WatchPlayer: ObservableObject {
                         if self.stallTicks >= 3 { // 1.5 seconds stalled
                             print("[Player] Stall detected at \(String(format: "%.1f", t))s, advancing")
                             self.stallTicks = 0
-                            self.playerDidFinish()
+                            self.handleTrackFinished(generation: capturedGen)
                             return
                         }
                     } else {
@@ -591,35 +604,37 @@ final class WatchPlayer: ObservableObject {
         statusObservation = nil
         if let observer = timeObserver { player?.removeTimeObserver(observer) }
         timeObserver = nil
-        NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: playerItem)
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        endObserver = nil
         player?.pause()
         player = nil
         playerItem = nil
     }
 
-    @objc private func playerDidFinish() {
-        Task { @MainActor in
-            // Guard: the finishing track can fire the end notification, duration
-            // detection, and stall detection all at once. Only handle it once.
-            guard self.finishedGeneration != self.playbackGeneration else { return }
-            self.finishedGeneration = self.playbackGeneration
+    /// Handle a track finishing. `generation` is the generation of the item that
+    /// finished — dedupes the three finish signals (end notification, duration
+    /// detection, stall detection) so a track is only advanced once.
+    private func handleTrackFinished(generation: Int) {
+        // Only act on the currently-playing generation, and only once for it.
+        guard generation == playbackGeneration else { return }
+        guard finishedGeneration != generation else { return }
+        finishedGeneration = generation
 
-            // Sleep timer: end-of-track mode
-            if self.isSleepTimerEndOfTrack {
-                self.cancelSleepTimer()
-                self.pause()
-                self.haptic(.stop)
-                return
-            }
+        // Sleep timer: end-of-track mode
+        if isSleepTimerEndOfTrack {
+            cancelSleepTimer()
+            pause()
+            haptic(.stop)
+            return
+        }
 
-            switch self.repeatMode {
-            case .one:
-                // Replay same track (playTrack bumps generation so it can finish again)
-                self.playTrack(at: self.currentIndex)
-            case .all, .none:
-                // advanceQueue handles end-of-queue: .all restarts, .none moves to next album
-                self.advanceQueue(forward: true)
-            }
+        switch repeatMode {
+        case .one:
+            // Replay same track (playTrack bumps generation so it can finish again)
+            playTrack(at: currentIndex)
+        case .all, .none:
+            // advanceQueue handles end-of-queue: .all restarts, .none moves to next album
+            advanceQueue(forward: true)
         }
     }
 
@@ -822,14 +837,17 @@ final class WatchPlayer: ObservableObject {
 
         let playlists = WatchFileReceiver.shared.availablePlaylists
         guard let playlist = playlists.first(where: { $0.id == playlistId }),
+              savedIndex >= 0,
               savedIndex < playlist.tracks.count,
               playlist.tracks[savedIndex].videoId == trackVideoId else { return }
 
         currentPlaylist = playlist
         currentIndex = savedIndex
-        currentTrack = playlist.tracks[savedIndex]
+        let track = playlist.tracks[savedIndex]
+        currentTrack = track
         buildQueue(startingAt: savedIndex)
-        duration = 0
+        knownTrackDuration = track.durationSeconds > 0 ? Double(track.durationSeconds) : 0
+        duration = knownTrackDuration
         currentTime = savedTime
     }
 }

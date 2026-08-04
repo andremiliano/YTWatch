@@ -1793,6 +1793,25 @@ final class YTMusicClient: NSObject, ObservableObject {
         return nil
     }
 
+    /// Bounded DFS for the first watchEndpoint.videoId anywhere in a renderer.
+    private func firstWatchVideoId(in obj: Any, depth: Int = 0) -> String? {
+        guard depth < 8 else { return nil }
+        if let dict = obj as? [String: Any] {
+            if let watch = dict["watchEndpoint"] as? [String: Any],
+               let vid = watch["videoId"] as? String, !vid.isEmpty {
+                return vid
+            }
+            for v in dict.values {
+                if let found = firstWatchVideoId(in: v, depth: depth + 1) { return found }
+            }
+        } else if let arr = obj as? [Any] {
+            for item in arr {
+                if let found = firstWatchVideoId(in: item, depth: depth + 1) { return found }
+            }
+        }
+        return nil
+    }
+
     private func parseTrackRenderer(_ r: [String: Any], fallbackArtist: String? = nil) -> Track? {
         guard let columns = r["flexColumns"] as? [[String: Any]] else { return nil }
 
@@ -1865,7 +1884,10 @@ final class YTMusicClient: NSObject, ObservableObject {
             }
         }
 
-        let videoId: String?
+        // videoId can live in several places depending on the endpoint (search vs
+        // playlist vs home). Try them all — search results in particular often use
+        // playlistItemData or a top-level navigationEndpoint rather than the overlay.
+        var videoId: String?
         if let overlay = r["overlay"] as? [String: Any],
            let playButton = overlay["musicItemThumbnailOverlayRenderer"] as? [String: Any],
            let content = playButton["content"] as? [String: Any],
@@ -1873,8 +1895,18 @@ final class YTMusicClient: NSObject, ObservableObject {
            let nav = playBtn["playNavigationEndpoint"] as? [String: Any],
            let watch = nav["watchEndpoint"] as? [String: Any] {
             videoId = watch["videoId"] as? String
-        } else {
-            videoId = nil
+        }
+        if videoId == nil, let pid = (r["playlistItemData"] as? [String: Any])?["videoId"] as? String {
+            videoId = pid
+        }
+        if videoId == nil,
+           let nav = r["navigationEndpoint"] as? [String: Any],
+           let watch = nav["watchEndpoint"] as? [String: Any] {
+            videoId = watch["videoId"] as? String
+        }
+        // Last resort — first flexColumn run with a watchEndpoint videoId
+        if videoId == nil {
+            videoId = firstWatchVideoId(in: r)
         }
 
         guard let vid = videoId else { return nil }

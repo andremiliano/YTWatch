@@ -39,7 +39,15 @@ struct SearchView: View {
                                 .submitLabel(.search)
                                 .onSubmit { runSearch() }
                                 .onChange(of: query) { _, newValue in
-                                    if hasSearched { return }
+                                    let trimmed = newValue.trimmingCharacters(in: .whitespaces)
+                                    if trimmed.isEmpty {
+                                        results = YTMusicClient.SearchResults()
+                                        suggestions = []
+                                        hasSearched = false
+                                        return
+                                    }
+                                    // Editing after a search returns to suggestion mode
+                                    if hasSearched { hasSearched = false }
                                     fetchSuggestions(for: newValue)
                                 }
 
