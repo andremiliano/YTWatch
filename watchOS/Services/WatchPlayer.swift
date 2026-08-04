@@ -174,6 +174,34 @@ final class WatchPlayer: ObservableObject {
         playTrack(at: currentIndex)
     }
 
+    /// Shuffle every downloaded track across ALL albums/playlists and play them in
+    /// random order. Loops forever (repeat all) so it keeps going through everything.
+    func playAllShuffled() {
+        // Gather every available track across all playlists, deduped by videoId
+        var seen = Set<String>()
+        var tracks: [Track] = []
+        for pl in WatchFileReceiver.shared.availablePlaylists {
+            for t in pl.tracks where seen.insert(t.videoId).inserted {
+                tracks.append(t)
+            }
+        }
+        guard !tracks.isEmpty else {
+            error = "No downloaded tracks"
+            return
+        }
+
+        let synthetic = Playlist(id: "__all_songs__", title: "Shuffle All", thumbnailURL: nil, tracks: tracks)
+        isShuffled = true
+        repeatMode = .all
+        currentPlaylist = synthetic
+        consecutiveFailures = 0
+        buildQueue(startingAt: Int.random(in: 0..<tracks.count))
+        guard !playQueue.isEmpty else { stopPlayback(); return }
+        haptic(.start)
+        currentIndex = playQueue[queuePosition]
+        playTrack(at: currentIndex)
+    }
+
     func play() {
         guard player != nil else {
             // Player was torn down — re-initialize if we have a current track

@@ -35,6 +35,12 @@ struct LibraryView: View {
                                     .transition(.move(edge: .top).combined(with: .opacity))
                             }
 
+                            if downloader.failedDownloadCount > 0 && downloader.totalQueuedCount == 0 {
+                                FailedDownloadsBanner()
+                                    .padding(.bottom, 8)
+                                    .transition(.move(edge: .top).combined(with: .opacity))
+                            }
+
                             if !sync.transferringTrackIds.isEmpty || sync.pendingSyncCount > 0 || !sync.syncedTrackIds.isEmpty {
                                 WatchSyncBanner()
                                     .padding(.bottom, 8)
@@ -263,6 +269,50 @@ private struct DownloadProgressCard: View {
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(Color.ytRed.opacity(0.2), lineWidth: 0.5)
+        )
+    }
+}
+
+private struct FailedDownloadsBanner: View {
+    @ObservedObject private var downloader = AudioDownloader.shared
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.orange)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(downloader.failedDownloadCount) download\(downloader.failedDownloadCount == 1 ? "" : "s") failed")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text("Tap to retry them all")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.appFaint)
+            }
+
+            Spacer()
+
+            Button {
+                downloader.retryAllFailed()
+            } label: {
+                Text("Retry All")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Color.orange)
+                    .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Color.appSurface)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.orange.opacity(0.3), lineWidth: 0.5)
         )
     }
 }

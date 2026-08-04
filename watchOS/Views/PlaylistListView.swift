@@ -133,6 +133,36 @@ struct PlaylistListView: View {
                                 }
                             }
 
+                            // Shuffle All — play every downloaded track in random order
+                            if searchText.isEmpty && !receiver.availablePlaylists.isEmpty {
+                                Button {
+                                    player.playAllShuffled()
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "shuffle")
+                                            .font(.system(size: 13, weight: .bold))
+                                            .foregroundStyle(.white)
+                                        Text("Shuffle All")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundStyle(.white)
+                                        Spacer()
+                                        Image(systemName: "play.fill")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundStyle(.white.opacity(0.85))
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 11)
+                                    .background(
+                                        LinearGradient(
+                                            colors: [Color.ytRed, Color.ytRed.opacity(0.65)],
+                                            startPoint: .leading, endPoint: .trailing
+                                        )
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                }
+                                .buttonStyle(.plain)
+                            }
+
                             // Recently Played smart playlist
                             if searchText.isEmpty, let recent = recentlyPlayedPlaylist {
                                 NavigationLink(destination: TrackListView(playlist: recent)) {

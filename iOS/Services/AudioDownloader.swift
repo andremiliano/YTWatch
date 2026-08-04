@@ -87,6 +87,15 @@ final class AudioDownloader: NSObject, ObservableObject {
         let playlistTitle: String
     }
 
+    // Auto-retry state
+    /// Info needed to re-download a track on failure (track + playlist), kept until it succeeds.
+    private var autoRetryInfo: [String: QueuedDownload] = [:]
+    /// How many automatic retries a track has consumed.
+    private var retryCount: [String: Int] = [:]
+    private static let maxAutoRetries = 3
+    /// Number of tracks currently in a failed (needs-retry) state — drives the Retry All button.
+    @Published var failedDownloadCount = 0
+
     private var bgSession: URLSession!
     private var foregroundSession: URLSession!
     private var batchStartTime: Date?
@@ -195,6 +204,7 @@ final class AudioDownloader: NSObject, ObservableObject {
             pendingDownloads.removeValue(forKey: track.videoId)
             savePendingDownloads()
             downloadErrors[track.videoId] = error.localizedDescription
+            recomputeFailedCount()
             downloadProgress.removeValue(forKey: track.videoId)
             trackCompletion()
             print("[DL] ✘ \(track.title) (\(track.videoId)): \(error.localizedDescription)")
@@ -212,7 +222,9 @@ final class AudioDownloader: NSObject, ObservableObject {
         // Clear errors so failed tracks can be retried
         for track in tracks {
             downloadErrors.removeValue(forKey: track.videoId)
+            retryCount.removeValue(forKey: track.videoId)
         }
+        recomputeFailedCount()
 
         let pending = tracks.filter { t in
             !isDownloaded(t.videoId) && !isDownloading(t.videoId) && !isQueued(t.videoId)
@@ -280,6 +292,9 @@ final class AudioDownloader: NSObject, ObservableObject {
         let track = item.track
         let videoId = track.videoId
 
+        // Remember how to retry this track if it fails
+        autoRetryInfo[videoId] = item
+
         // Move from queued → downloading
         queuedVideoIds.remove(videoId)
 
@@ -327,12 +342,86 @@ final class AudioDownloader: NSObject, ObservableObject {
     private func handleBatchItemFailure(videoId: String, error: Error) {
         queuedVideoIds.remove(videoId)
         downloadingVideoIds.remove(videoId)
-        downloadErrors[videoId] = error.localizedDescription
         downloadProgress.removeValue(forKey: videoId)
         activeDownloadCount = max(0, activeDownloadCount - 1)
+
+        // Try to auto-retry before surfacing the failure
+        if attemptAutoRetry(videoId: videoId) {
+            print("[DL] ⟳ batch \(videoId) auto-retrying")
+            return
+        }
+
+        downloadErrors[videoId] = error.localizedDescription
+        recomputeFailedCount()
         trackCompletion()
         print("[DL] ✘ batch \(videoId): \(error.localizedDescription)")
         checkBatchCompletion()
+    }
+
+    // MARK: - Auto-Retry
+
+    /// Schedule an automatic retry for a failed track, if it hasn't exhausted its
+    /// retries. Returns true if a retry was scheduled (caller should NOT record an error).
+    private func attemptAutoRetry(videoId: String) -> Bool {
+        guard let info = autoRetryInfo[videoId] else { return false }
+        let count = retryCount[videoId, default: 0]
+        guard count < Self.maxAutoRetries else { return false }
+        retryCount[videoId] = count + 1
+        downloadErrors.removeValue(forKey: videoId)
+        recomputeFailedCount()
+
+        let delaySec = Double(count + 1) * 2.0 // 2s, 4s, 6s backoff
+        print("[DL] ⟳ auto-retry \(videoId) attempt \(count + 1)/\(Self.maxAutoRetries) in \(Int(delaySec))s")
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(delaySec * 1_000_000_000))
+            guard self.downloadedTracks[videoId] == nil,
+                  !self.downloadingVideoIds.contains(videoId),
+                  !self.queuedVideoIds.contains(videoId) else { return }
+            self.queuedVideoIds.insert(videoId)
+            self.globalQueue.append(info)
+            self.drainGlobalQueue()
+        }
+        return true
+    }
+
+    private func recomputeFailedCount() {
+        failedDownloadCount = downloadErrors.count
+    }
+
+    /// Manually retry every failed download at once (resets their retry counters).
+    func retryAllFailed() {
+        let failed = Array(downloadErrors.keys)
+        guard !failed.isEmpty else { return }
+
+        var items: [QueuedDownload] = []
+        for videoId in failed {
+            retryCount[videoId] = 0
+            downloadErrors.removeValue(forKey: videoId)
+            if let info = autoRetryInfo[videoId] {
+                items.append(info)
+            } else if let meta = trackMetadata[videoId] {
+                let track = Track(
+                    id: videoId, videoId: videoId, title: meta.title, artist: meta.artist,
+                    album: meta.album, durationSeconds: meta.durationSeconds, thumbnailURL: meta.thumbnailURL
+                )
+                let pd = pendingDownloads[videoId]
+                items.append(QueuedDownload(
+                    track: track,
+                    playlistId: pd?.playlistId ?? "library",
+                    playlistTitle: pd?.playlistTitle ?? "Downloads"
+                ))
+            }
+        }
+        recomputeFailedCount()
+
+        let toEnqueue = items.filter { !isDownloaded($0.track.videoId) && !isActive($0.track.videoId) }
+        guard !toEnqueue.isEmpty else { return }
+        beginBatch(total: toEnqueue.count)
+        for item in toEnqueue {
+            queuedVideoIds.insert(item.track.videoId)
+            globalQueue.append(item)
+        }
+        drainGlobalQueue()
     }
 
     // MARK: - Stream Resolution & Background Download
@@ -378,11 +467,21 @@ final class AudioDownloader: NSObject, ObservableObject {
         savePendingDownloads()
 
         if let error {
-            let msg = error.localizedDescription
-            downloadErrors[videoId] = msg
             downloadProgress.removeValue(forKey: videoId)
             downloadingVideoIds.remove(videoId)
             activeDownloadCount = max(0, activeDownloadCount - 1)
+
+            // Auto-retry batch downloads (no awaiting caller). Single-track download()
+            // calls have a continuation and should get the error surfaced immediately.
+            let hasWaiter = completionContinuations[videoId] != nil
+            if !hasWaiter, attemptAutoRetry(videoId: videoId) {
+                print("[DL] ⟳ \(videoId) auto-retrying")
+                return
+            }
+
+            let msg = error.localizedDescription
+            downloadErrors[videoId] = msg
+            recomputeFailedCount()
             trackCompletion()
             print("[DL] ✘ \(videoId): \(msg)")
             if let conts = completionContinuations.removeValue(forKey: videoId) {
@@ -394,10 +493,13 @@ final class AudioDownloader: NSObject, ObservableObject {
 
         guard let tempURL else {
             let err = DownloadError.badResponse(-1)
-            downloadErrors[videoId] = err.localizedDescription
             downloadProgress.removeValue(forKey: videoId)
             downloadingVideoIds.remove(videoId)
             activeDownloadCount = max(0, activeDownloadCount - 1)
+            let hasWaiter = completionContinuations[videoId] != nil
+            if !hasWaiter, attemptAutoRetry(videoId: videoId) { return }
+            downloadErrors[videoId] = err.localizedDescription
+            recomputeFailedCount()
             trackCompletion()
             if let conts = completionContinuations.removeValue(forKey: videoId) {
                 for cont in conts { cont.resume(throwing: err) }
@@ -412,6 +514,7 @@ final class AudioDownloader: NSObject, ObservableObject {
             try FileManager.default.moveItem(at: tempURL, to: destURL)
         } catch {
             downloadErrors[videoId] = error.localizedDescription
+            recomputeFailedCount()
             downloadProgress.removeValue(forKey: videoId)
             downloadingVideoIds.remove(videoId)
             activeDownloadCount = max(0, activeDownloadCount - 1)
@@ -427,6 +530,10 @@ final class AudioDownloader: NSObject, ObservableObject {
         downloadProgress[videoId] = 1.0
         downloadingVideoIds.remove(videoId)
         activeDownloadCount = max(0, activeDownloadCount - 1)
+        // Success — clear retry bookkeeping
+        autoRetryInfo.removeValue(forKey: videoId)
+        retryCount.removeValue(forKey: videoId)
+        if downloadErrors.removeValue(forKey: videoId) != nil { recomputeFailedCount() }
         trackCompletion()
         print("[DL] ✓ \(videoId)")
 
@@ -491,6 +598,9 @@ final class AudioDownloader: NSObject, ObservableObject {
         }
         downloadProgress.removeValue(forKey: videoId)
         downloadErrors.removeValue(forKey: videoId)
+        recomputeFailedCount()
+        autoRetryInfo.removeValue(forKey: videoId)
+        retryCount.removeValue(forKey: videoId)
         trackMetadata.removeValue(forKey: videoId)
         pendingDownloads.removeValue(forKey: videoId)
         saveTrackMetadata()
