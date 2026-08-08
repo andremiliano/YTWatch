@@ -169,8 +169,9 @@ final class WatchFileReceiver: NSObject, ObservableObject {
 
     // MARK: - Direct WiFi Download
 
-    /// Max concurrent direct downloads on Watch
-    private static let maxWatchDownloads = 3
+    /// Max concurrent direct downloads on Watch. Kept low — the Watch has very
+    /// little RAM and each concurrent download + write adds memory pressure.
+    private static let maxWatchDownloads = 2
     @Published var directDownloadCount = 0
     private var directDownloadQueue: [DirectDownloadPayload] = []
 
@@ -214,24 +215,28 @@ final class WatchFileReceiver: NSObject, ObservableObject {
                 }
                 request.timeoutInterval = 120
 
-                let (data, response) = try await URLSession.shared.data(for: request)
+                // Stream to a temp file on disk instead of loading the whole audio into
+                // RAM — critical on the memory-constrained Watch (prevents OOM crashes).
+                let (tempURL, response) = try await URLSession.shared.download(for: request)
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-                guard (200...299).contains(status), !data.isEmpty else {
+                let size = (try? tempURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                guard (200...299).contains(status), size > 0 else {
+                    try? fm.removeItem(at: tempURL)
                     throw URLError(.badServerResponse)
                 }
 
                 let destURL = Self.audioDirectory.appendingPathComponent("\(videoId).m4a")
                 try? fm.removeItem(at: destURL)
-                try data.write(to: destURL)
+                try fm.moveItem(at: tempURL, to: destURL)
 
-                // Download thumbnail
+                // Download thumbnail (also streamed to disk)
                 if let thumbURLStr = payload.thumbnailDownloadURL,
                    let thumbURL = URL(string: thumbURLStr) {
-                    if let (thumbData, _) = try? await URLSession.shared.data(from: thumbURL),
-                       !thumbData.isEmpty {
+                    if let (thumbTemp, thumbResp) = try? await URLSession.shared.download(from: thumbURL),
+                       (thumbResp as? HTTPURLResponse).map({ (200...299).contains($0.statusCode) }) ?? true {
                         let thumbDest = Self.thumbnailDirectory.appendingPathComponent("\(videoId).jpg")
                         try? fm.removeItem(at: thumbDest)
-                        try? thumbData.write(to: thumbDest)
+                        try? fm.moveItem(at: thumbTemp, to: thumbDest)
                     }
                 }
 

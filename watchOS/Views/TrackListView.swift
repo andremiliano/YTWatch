@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import ImageIO
 
 // MARK: - Watch Thumbnail Cache
 
@@ -7,15 +8,16 @@ import UIKit
 final class WatchThumbnailCache {
     static let shared = WatchThumbnailCache()
     private var cache: [String: UIImage] = [:]
-    private let maxEntries = 80
+    // Keep this modest — full-size YouTube thumbnails in memory are a big source of
+    // memory pressure on the Watch. We downsample and cap the cache.
+    private let maxEntries = 50
 
     func image(for videoId: String) -> UIImage? {
         if let cached = cache[videoId] { return cached }
         guard let url = WatchFileReceiver.shared.thumbnailURL(for: videoId),
-              let data = try? Data(contentsOf: url),
-              let img = UIImage(data: data) else { return nil }
+              let img = Self.downsampledImage(at: url, maxPixel: 200) else { return nil }
         if cache.count >= maxEntries {
-            // Evict oldest (approximation — just drop half)
+            // Evict roughly half when full
             let keys = Array(cache.keys.prefix(maxEntries / 2))
             for k in keys { cache.removeValue(forKey: k) }
         }
@@ -24,6 +26,20 @@ final class WatchThumbnailCache {
     }
 
     func clear() { cache.removeAll() }
+
+    /// Decode a downsampled thumbnail with ImageIO — never holds the full-size bitmap.
+    private static func downsampledImage(at url: URL, maxPixel: CGFloat) -> UIImage? {
+        let srcOpts = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, srcOpts) else { return nil }
+        let opts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
+        return UIImage(cgImage: cg)
+    }
 }
 
 struct TrackListView: View {

@@ -3,6 +3,7 @@ import AVFoundation
 import MediaPlayer
 import UIKit
 import WatchKit
+import ImageIO
 
 enum RepeatMode: String {
     case none, one, all
@@ -741,11 +742,25 @@ final class WatchPlayer: ObservableObject {
             return cached.artwork
         }
         guard let url = WatchFileReceiver.shared.thumbnailURL(for: track.videoId),
-              let data = try? Data(contentsOf: url),
-              let image = UIImage(data: data) else { return nil }
+              let image = Self.downsampledImage(at: url, maxPixel: 300) else { return nil }
         let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
         cachedArtwork = (track.videoId, artwork)
         return artwork
+    }
+
+    /// Decode a downsampled image with ImageIO — avoids holding a full-size bitmap
+    /// in memory (important on the memory-constrained Watch).
+    private static func downsampledImage(at url: URL, maxPixel: CGFloat) -> UIImage? {
+        let srcOpts = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, srcOpts) else { return nil }
+        let opts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
+        return UIImage(cgImage: cg)
     }
 
     private func setupRemoteControls() {
