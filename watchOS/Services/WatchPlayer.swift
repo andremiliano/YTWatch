@@ -88,8 +88,9 @@ final class WatchPlayer: ObservableObject {
     private var timeObserver: Any?
     private var currentIndex = 0
 
-    private var playQueue: [Int] = []
-    private var queuePosition: Int = 0
+    /// Tested, crash-proof queue logic (see PlaybackQueue + PlaybackCoreTests).
+    private var queue = PlaybackQueue()
+    private var rng = SystemRandomNumberGenerator()
     private var wasPlayingBeforeInterruption = false
     private var timeObserverTick = 0
     private var statusObservation: NSKeyValueObservation?
@@ -173,12 +174,12 @@ final class WatchPlayer: ObservableObject {
         currentPlaylist = playlist
         consecutiveFailures = 0
         buildQueue(startingAt: index)
-        guard !playQueue.isEmpty else {
+        guard let idx = queue.currentIndex else {
             error = "No downloaded tracks in \(playlist.title)"
             stopPlayback()
             return
         }
-        currentIndex = playQueue[queuePosition]
+        currentIndex = idx
         playTrack(at: currentIndex)
     }
 
@@ -215,9 +216,9 @@ final class WatchPlayer: ObservableObject {
         consecutiveFailures = 0
         queueRevision += 1
         buildQueue(startingAt: Int.random(in: 0..<tracks.count))
-        guard !playQueue.isEmpty else { stopPlayback(); return }
+        guard let idx = queue.currentIndex else { stopPlayback(); return }
         if doHaptic { haptic(.start) }
-        currentIndex = playQueue[queuePosition]
+        currentIndex = idx
         playTrack(at: currentIndex)
     }
 
@@ -226,9 +227,8 @@ final class WatchPlayer: ObservableObject {
     /// Remove a track from the Up Next queue (only affects not-yet-played items).
     func removeFromQueue(videoId: String) {
         guard let playlist = currentPlaylist,
-              let trackIdx = playlist.tracks.firstIndex(where: { $0.videoId == videoId }),
-              let qpos = playQueue.firstIndex(of: trackIdx), qpos > queuePosition else { return }
-        playQueue.remove(at: qpos)
+              let trackIdx = playlist.tracks.firstIndex(where: { $0.videoId == videoId }) else { return }
+        queue.remove(trackIndex: trackIdx)
         queueRevision += 1
         haptic(.click)
     }
@@ -236,11 +236,8 @@ final class WatchPlayer: ObservableObject {
     /// Move a queued track to play immediately after the current one.
     func playTrackNext(videoId: String) {
         guard let playlist = currentPlaylist,
-              let trackIdx = playlist.tracks.firstIndex(where: { $0.videoId == videoId }),
-              let qpos = playQueue.firstIndex(of: trackIdx), qpos > queuePosition else { return }
-        playQueue.remove(at: qpos)
-        let insertAt = min(queuePosition + 1, playQueue.count)
-        playQueue.insert(trackIdx, at: insertAt)
+              let trackIdx = playlist.tracks.firstIndex(where: { $0.videoId == videoId }) else { return }
+        queue.moveToNext(trackIndex: trackIdx)
         queueRevision += 1
         haptic(.click)
     }
@@ -310,9 +307,9 @@ final class WatchPlayer: ObservableObject {
     // MARK: - Up Next
 
     var upNextTracks: [Track] {
-        guard let playlist = currentPlaylist, !playQueue.isEmpty else { return [] }
-        let remaining = playQueue.dropFirst(queuePosition + 1)
-        return remaining.prefix(20).compactMap { idx -> Track? in
+        guard let playlist = currentPlaylist else { return [] }
+        _ = queueRevision // observe edits so the UI refreshes
+        return queue.upNext(limit: 20).compactMap { idx -> Track? in
             guard idx >= 0, idx < playlist.tracks.count else { return nil }
             return playlist.tracks[idx]
         }
@@ -408,63 +405,36 @@ final class WatchPlayer: ObservableObject {
     }
 
     private func buildQueue(startingAt index: Int) {
-        guard let playlist = currentPlaylist else {
-            playQueue = []; queuePosition = 0; return
-        }
-        let avail = availableIndices(in: playlist)
-        guard !avail.isEmpty else {
-            playQueue = []; queuePosition = 0; return
-        }
-        // Start on a track that actually has a file
-        let start = avail.contains(index) ? index : avail[0]
-        if isShuffled {
-            var rest = avail.filter { $0 != start }
-            rest.shuffle()
-            playQueue = [start] + rest
-            queuePosition = 0
-        } else {
-            playQueue = avail
-            queuePosition = avail.firstIndex(of: start) ?? 0
-        }
+        let avail = currentPlaylist.map { availableIndices(in: $0) } ?? []
+        queue.build(availableIndices: avail, startAt: index, shuffled: isShuffled, using: &rng)
     }
 
     private func advanceQueue(forward: Bool) {
         guard let playlist = currentPlaylist else { return }
-        guard !playQueue.isEmpty else { playNextPlaylist(); return }
-
-        if forward {
-            let next = queuePosition + 1
-            if next < playQueue.count {
-                queuePosition = next
-            } else if repeatMode == .all {
-                // Restart the same playlist — reshuffle if shuffled
-                let restart = isShuffled ? (availableIndices(in: playlist).randomElement() ?? playQueue[0]) : playQueue[0]
-                buildQueue(startingAt: restart)
-                guard !playQueue.isEmpty else { playNextPlaylist(); return }
+        let avail = availableIndices(in: playlist)
+        let result = queue.advance(
+            forward: forward,
+            repeatAll: repeatMode == .all,
+            availableIndices: avail,
+            using: &rng
+        )
+        switch result {
+        case .play(let idx):
+            currentIndex = idx
+            playTrack(at: idx)
+        case .endReached:
+            // End of queue in .none mode. Auto-continue with an endless library
+            // shuffle if enabled; otherwise move to the next album, then stop.
+            if autoPlaySimilar && currentPlaylist?.id != "__auto_mix__" {
+                beginAutoMix()
             } else {
-                // End of queue in .none mode. Auto-continue with an endless library
-                // shuffle if enabled; otherwise move to the next album, then stop.
-                if autoPlaySimilar && currentPlaylist?.id != "__auto_mix__" {
-                    beginAutoMix()
-                } else {
-                    playNextPlaylist()
-                }
-                return
+                playNextPlaylist()
             }
-        } else {
-            let prev = queuePosition - 1
-            if prev >= 0 {
-                queuePosition = prev
-            } else {
-                return // already at first track
-            }
+        case .atStart:
+            break // already at the first track
+        case .empty:
+            playNextPlaylist()
         }
-
-        guard queuePosition >= 0, queuePosition < playQueue.count else {
-            playNextPlaylist(); return
-        }
-        currentIndex = playQueue[queuePosition]
-        playTrack(at: currentIndex)
     }
 
     private func playTrack(at index: Int) {
@@ -737,22 +707,23 @@ final class WatchPlayer: ObservableObject {
                     currentPlaylist = candidate
                     consecutiveFailures = 0
                     buildQueue(startingAt: 0)
-                    if !playQueue.isEmpty {
-                        currentIndex = playQueue[queuePosition]
-                        playTrack(at: currentIndex)
+                    if let ci = queue.currentIndex {
+                        currentIndex = ci
+                        playTrack(at: ci)
                         return
                     }
                 }
                 break
             }
 
-            if !availableIndices(in: candidate).isEmpty {
+            let candidateAvail = availableIndices(in: candidate)
+            if !candidateAvail.isEmpty {
                 currentPlaylist = candidate
                 consecutiveFailures = 0
-                buildQueue(startingAt: availableIndices(in: candidate).first ?? 0)
-                if !playQueue.isEmpty {
-                    currentIndex = playQueue[queuePosition]
-                    playTrack(at: currentIndex)
+                buildQueue(startingAt: candidateAvail.first ?? 0)
+                if let ci = queue.currentIndex {
+                    currentIndex = ci
+                    playTrack(at: ci)
                     return
                 }
             }
