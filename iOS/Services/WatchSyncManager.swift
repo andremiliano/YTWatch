@@ -31,8 +31,9 @@ final class WatchSyncManager: NSObject, ObservableObject {
     private var wifiTimeoutTasks: [String: Task<Void, Never>] = [:]
     /// VideoIds that failed WiFi download — forces Bluetooth path until next reachability change
     private var wifiFailedVideoIds: Set<String> = []
-    /// Max tracks in-flight at once (WiFi + Bluetooth combined)
-    private static let maxConcurrentSyncTransfers = 10
+    /// Max tracks in-flight at once (WiFi + Bluetooth combined). Kept modest so we
+    /// never ask the memory-constrained Watch to juggle many downloads at once.
+    private static let maxConcurrentSyncTransfers = 5
 
     struct PendingSyncItem: Codable {
         let videoId: String

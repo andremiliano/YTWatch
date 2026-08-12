@@ -12,10 +12,16 @@ struct SearchView: View {
     @State private var radioTrack: Track?
     @State private var albumTarget: Playlist?
     @State private var artistTarget: (id: String, name: String)?
+    @State private var recentSearches: [String] = SearchHistory.load()
     @FocusState private var focused: Bool
 
     private var showSuggestions: Bool {
         focused && !query.trimmingCharacters(in: .whitespaces).isEmpty && !hasSearched && !suggestions.isEmpty
+    }
+
+    /// Show recent searches when the field is focused but empty
+    private var showRecents: Bool {
+        focused && query.trimmingCharacters(in: .whitespaces).isEmpty && !recentSearches.isEmpty
     }
 
     var body: some View {
@@ -97,6 +103,12 @@ struct SearchView: View {
                         Spacer()
                         ProgressView().tint(Color.ytRed)
                         Spacer()
+                    } else if showRecents {
+                        RecentSearchesList(
+                            recents: recentSearches,
+                            onTap: { term in query = term; runSearch() },
+                            onClear: { recentSearches = []; SearchHistory.clear() }
+                        )
                     } else if showSuggestions {
                         SuggestionsList(suggestions: suggestions) { suggestion in
                             query = suggestion
@@ -197,16 +209,18 @@ struct SearchView: View {
     }
 
     private func runSearch() {
-        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
         focused = false
         isSearching = true
         hasSearched = true
         resultsAppeared = false
         suggestions = []
         suggestionsTask?.cancel()
+        recentSearches = SearchHistory.add(trimmed)
         Task {
             do {
-                results = try await YTMusicClient.shared.search(query: query)
+                results = try await YTMusicClient.shared.search(query: trimmed)
             } catch {
                 self.error = error.localizedDescription
             }
@@ -225,6 +239,86 @@ struct SearchView: View {
             let result = (try? await YTMusicClient.shared.fetchSearchSuggestions(query: trimmed)) ?? []
             guard !Task.isCancelled else { return }
             withAnimation(.easeOut(duration: 0.15)) { suggestions = result }
+        }
+    }
+}
+
+// MARK: - Search History
+
+enum SearchHistory {
+    private static let key = "recentSearches"
+    private static let maxItems = 12
+
+    static func load() -> [String] {
+        UserDefaults.standard.stringArray(forKey: key) ?? []
+    }
+
+    @discardableResult
+    static func add(_ term: String) -> [String] {
+        let t = term.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return load() }
+        var items = load().filter { $0.caseInsensitiveCompare(t) != .orderedSame }
+        items.insert(t, at: 0)
+        if items.count > maxItems { items = Array(items.prefix(maxItems)) }
+        UserDefaults.standard.set(items, forKey: key)
+        return items
+    }
+
+    static func clear() {
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+}
+
+// MARK: - Recent Searches List
+
+private struct RecentSearchesList: View {
+    let recents: [String]
+    let onTap: (String) -> Void
+    let onClear: () -> Void
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                HStack {
+                    Text("RECENT")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.appFaint)
+                    Spacer()
+                    Button("Clear", action: onClear)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.ytRed)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+
+                ForEach(Array(recents.enumerated()), id: \.offset) { i, term in
+                    Button { onTap(term) } label: {
+                        HStack(spacing: 14) {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(Color.appFaint)
+                                .frame(width: 20)
+                            Text(term)
+                                .font(.system(size: 15))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            Spacer()
+                            Image(systemName: "arrow.up.left")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Color.appGhost)
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 13)
+                    }
+                    .buttonStyle(.plain)
+
+                    if i < recents.count - 1 {
+                        Divider().background(Color.appBorder).padding(.leading, 54)
+                    }
+                }
+            }
+            .padding(.top, 4)
         }
     }
 }
