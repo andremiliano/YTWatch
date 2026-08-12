@@ -129,6 +129,18 @@ struct TrackListView: View {
 
                             ForEach(Array(upcoming.prefix(10).enumerated()), id: \.element.videoId) { _, track in
                                 UpNextRow(track: track)
+                                    .contextMenu {
+                                        Button {
+                                            player.playTrackNext(videoId: track.videoId)
+                                        } label: {
+                                            Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                                        }
+                                        Button(role: .destructive) {
+                                            player.removeFromQueue(videoId: track.videoId)
+                                        } label: {
+                                            Label("Remove from Queue", systemImage: "minus.circle")
+                                        }
+                                    }
                             }
                         }
                     }

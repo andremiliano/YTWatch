@@ -217,6 +217,21 @@ struct PlaylistListView: View {
                                 .buttonStyle(.plain)
                                 .padding(.top, 2)
                             }
+
+                            // Auto-play similar toggle — keep music going when a playlist ends
+                            Toggle(isOn: $player.autoPlaySimilar) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "infinity")
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundStyle(Color.ytRed)
+                                    Text("Auto-Play Similar")
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundStyle(Color(white: 0.7))
+                                }
+                            }
+                            .tint(Color.ytRed)
+                            .padding(.horizontal, 8)
+                            .padding(.top, 6)
                         }
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)

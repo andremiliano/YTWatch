@@ -63,6 +63,13 @@ final class WatchPlayer: ObservableObject {
     @Published var isShuffled = false
     @Published var repeatMode: RepeatMode = .none
     @Published var currentVolume: Float = 0.5
+    /// When a playlist ends, keep playing an endless shuffle of the whole library
+    /// instead of stopping.
+    @Published var autoPlaySimilar: Bool = (UserDefaults.standard.object(forKey: "autoPlaySimilar") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(autoPlaySimilar, forKey: "autoPlaySimilar") }
+    }
+    /// Bumped whenever the play queue is edited, so views re-read `upNextTracks`.
+    @Published private(set) var queueRevision = 0
 
     // Sleep timer
     @Published var sleepTimerRemaining: TimeInterval? = nil
@@ -178,6 +185,15 @@ final class WatchPlayer: ObservableObject {
     /// Shuffle every downloaded track across ALL albums/playlists and play them in
     /// random order. Loops forever (repeat all) so it keeps going through everything.
     func playAllShuffled() {
+        startLibraryShuffle(id: "__all_songs__", title: "Shuffle All", haptic: true)
+    }
+
+    /// Endless library shuffle used to auto-continue when a playlist ends.
+    private func beginAutoMix() {
+        startLibraryShuffle(id: "__auto_mix__", title: "Auto Mix", haptic: false)
+    }
+
+    private func startLibraryShuffle(id: String, title: String, haptic doHaptic: Bool) {
         // Gather every available track across all playlists, deduped by videoId
         var seen = Set<String>()
         var tracks: [Track] = []
@@ -188,19 +204,45 @@ final class WatchPlayer: ObservableObject {
         }
         guard !tracks.isEmpty else {
             error = "No downloaded tracks"
+            stopPlayback()
             return
         }
 
-        let synthetic = Playlist(id: "__all_songs__", title: "Shuffle All", thumbnailURL: nil, tracks: tracks)
+        let synthetic = Playlist(id: id, title: title, thumbnailURL: nil, tracks: tracks)
         isShuffled = true
         repeatMode = .all
         currentPlaylist = synthetic
         consecutiveFailures = 0
+        queueRevision += 1
         buildQueue(startingAt: Int.random(in: 0..<tracks.count))
         guard !playQueue.isEmpty else { stopPlayback(); return }
-        haptic(.start)
+        if doHaptic { haptic(.start) }
         currentIndex = playQueue[queuePosition]
         playTrack(at: currentIndex)
+    }
+
+    // MARK: - Queue Editing
+
+    /// Remove a track from the Up Next queue (only affects not-yet-played items).
+    func removeFromQueue(videoId: String) {
+        guard let playlist = currentPlaylist,
+              let trackIdx = playlist.tracks.firstIndex(where: { $0.videoId == videoId }),
+              let qpos = playQueue.firstIndex(of: trackIdx), qpos > queuePosition else { return }
+        playQueue.remove(at: qpos)
+        queueRevision += 1
+        haptic(.click)
+    }
+
+    /// Move a queued track to play immediately after the current one.
+    func playTrackNext(videoId: String) {
+        guard let playlist = currentPlaylist,
+              let trackIdx = playlist.tracks.firstIndex(where: { $0.videoId == videoId }),
+              let qpos = playQueue.firstIndex(of: trackIdx), qpos > queuePosition else { return }
+        playQueue.remove(at: qpos)
+        let insertAt = min(queuePosition + 1, playQueue.count)
+        playQueue.insert(trackIdx, at: insertAt)
+        queueRevision += 1
+        haptic(.click)
     }
 
     func play() {
@@ -400,8 +442,13 @@ final class WatchPlayer: ObservableObject {
                 buildQueue(startingAt: restart)
                 guard !playQueue.isEmpty else { playNextPlaylist(); return }
             } else {
-                // End of queue in .none mode — move to next album/playlist
-                playNextPlaylist()
+                // End of queue in .none mode. Auto-continue with an endless library
+                // shuffle if enabled; otherwise move to the next album, then stop.
+                if autoPlaySimilar && currentPlaylist?.id != "__auto_mix__" {
+                    beginAutoMix()
+                } else {
+                    playNextPlaylist()
+                }
                 return
             }
         } else {
