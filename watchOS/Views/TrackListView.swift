@@ -128,19 +128,11 @@ struct TrackListView: View {
                             .padding(.top, 8)
 
                             ForEach(Array(upcoming.prefix(10).enumerated()), id: \.element.videoId) { _, track in
-                                UpNextRow(track: track)
-                                    .contextMenu {
-                                        Button {
-                                            player.playTrackNext(videoId: track.videoId)
-                                        } label: {
-                                            Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
-                                        }
-                                        Button(role: .destructive) {
-                                            player.removeFromQueue(videoId: track.videoId)
-                                        } label: {
-                                            Label("Remove from Queue", systemImage: "minus.circle")
-                                        }
-                                    }
+                                UpNextRow(
+                                    track: track,
+                                    onPlayNext: { player.playTrackNext(videoId: track.videoId) },
+                                    onRemove: { player.removeFromQueue(videoId: track.videoId) }
+                                )
                             }
                         }
                     }
@@ -224,6 +216,8 @@ private struct WatchTrackRow: View {
 
 private struct UpNextRow: View {
     let track: Track
+    var onPlayNext: () -> Void
+    var onRemove: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
@@ -246,9 +240,19 @@ private struct UpNextRow: View {
 
             Spacer()
 
-            Text(track.durationFormatted)
-                .font(.system(size: 8, design: .monospaced))
-                .foregroundStyle(Color(white: 0.2))
+            Button(action: onPlayNext) {
+                Image(systemName: "text.line.first.and.arrowtriangle.forward")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.ytRed)
+            }
+            .buttonStyle(.plain)
+
+            Button(action: onRemove) {
+                Image(systemName: "minus.circle.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color(white: 0.4))
+            }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)

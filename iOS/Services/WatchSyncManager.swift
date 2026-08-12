@@ -787,6 +787,7 @@ extension WatchSyncManager: WCSessionDelegate {
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
         let typeStr = message[WatchMessageKey.type.rawValue] as? String
         let trackIds = message["trackIds"] as? [String]
+        let videoIds = message["videoIds"] as? [String]
         let videoId = message["videoId"] as? String
         let success = message["success"] as? Bool
         Task { @MainActor in
@@ -796,6 +797,8 @@ extension WatchSyncManager: WCSessionDelegate {
                 self.handleSyncInventory(watchTrackIds: trackIds ?? [])
             case .downloadResult:
                 if let videoId { self.handleDirectDownloadResult(videoId: videoId, success: success ?? false) }
+            case .requestRedownload:
+                if let videoIds { self.handleRedownloadRequest(videoIds: videoIds) }
             default:
                 break
             }
@@ -804,14 +807,39 @@ extension WatchSyncManager: WCSessionDelegate {
 
     nonisolated func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
         let typeStr = userInfo[WatchMessageKey.type.rawValue] as? String
+        let videoIds = userInfo["videoIds"] as? [String]
         let videoId = userInfo["videoId"] as? String
         let success = userInfo["success"] as? Bool
         Task { @MainActor in
             guard let typeStr, let type = WatchMessageType(rawValue: typeStr) else { return }
-            if type == .downloadResult, let videoId {
-                self.handleDirectDownloadResult(videoId: videoId, success: success ?? false)
+            switch type {
+            case .downloadResult:
+                if let videoId { self.handleDirectDownloadResult(videoId: videoId, success: success ?? false) }
+            case .requestRedownload:
+                if let videoIds { self.handleRedownloadRequest(videoIds: videoIds) }
+            default:
+                break
             }
         }
+    }
+
+    /// Watch reported these tracks as missing/corrupt — clear their synced state and re-send.
+    private func handleRedownloadRequest(videoIds: [String]) {
+        guard !videoIds.isEmpty else { return }
+        print("[Sync] Watch requested re-download of \(videoIds.count) tracks")
+        var requeued = 0
+        for videoId in videoIds {
+            // Only re-send tracks the phone still has locally
+            guard AudioDownloader.shared.localURL(for: videoId) != nil else { continue }
+            syncedTrackIds.remove(videoId)
+            wifiFailedVideoIds.remove(videoId)
+            if !pendingSyncQueue.contains(where: { $0.videoId == videoId }) {
+                reEnqueueForRetry(videoId: videoId)
+                requeued += 1
+            }
+        }
+        saveSyncState()
+        if requeued > 0 { drainPendingQueue() }
     }
 
     nonisolated func sessionDidBecomeInactive(_ session: WCSession) {}

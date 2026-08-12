@@ -1,5 +1,6 @@
 import Foundation
 import WatchConnectivity
+import AVFoundation
 
 // Receives audio files and playlist metadata from the iPhone companion app.
 @MainActor
@@ -45,6 +46,85 @@ final class WatchFileReceiver: NSObject, ObservableObject {
             WCSession.default.delegate = self
             WCSession.default.activate()
         }
+        validateDownloadsOnLaunch()
+    }
+
+    // MARK: - Launch Validation & Self-Heal
+
+    /// On launch, verify every downloaded file is intact and playable. Corrupt/truncated
+    /// files are deleted and the phone is asked to re-send them. Runs in the background,
+    /// throttled, so it never blocks the UI. This keeps a bad file from crashing playback.
+    private static let validatedKey = "validatedTrackIds"
+
+    func validateDownloadsOnLaunch() {
+        Task { @MainActor in
+            let ids = Array(availableTrackIds())
+            guard !ids.isEmpty else { return }
+            var validated = Set(UserDefaults.standard.stringArray(forKey: Self.validatedKey) ?? [])
+            var corrupt: [String] = []
+            var newlyValidated: [String] = []
+
+            for (i, id) in ids.enumerated() {
+                let url = Self.audioDirectory.appendingPathComponent("\(id).m4a")
+                // Fast check every launch: size catches truncated/interrupted downloads.
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                if size < 20_000 {
+                    corrupt.append(id)
+                    continue
+                }
+                // Deep playability check only once per file (cached), so later launches are cheap.
+                if validated.contains(id) { continue }
+                if await Self.isPlayable(url) {
+                    newlyValidated.append(id)
+                } else {
+                    corrupt.append(id)
+                }
+                if i % 5 == 4 { try? await Task.sleep(nanoseconds: 30_000_000) } // yield, never hitch UI
+            }
+
+            if !newlyValidated.isEmpty {
+                validated.formUnion(newlyValidated)
+            }
+            if corrupt.isEmpty {
+                UserDefaults.standard.set(Array(validated), forKey: Self.validatedKey)
+                print("[Receiver] Launch validation: all \(ids.count) files OK")
+                return
+            }
+
+            print("[Receiver] Launch validation: \(corrupt.count) corrupt/unplayable — deleting + requesting re-download")
+            for id in corrupt {
+                try? fm.removeItem(at: Self.audioDirectory.appendingPathComponent("\(id).m4a"))
+                validated.remove(id)
+            }
+            UserDefaults.standard.set(Array(validated), forKey: Self.validatedKey)
+            _cachedTrackIds = nil
+            refreshAvailable()
+            requestRedownload(videoIds: corrupt)
+        }
+    }
+
+    /// Validate that AVFoundation can actually play a file (catches non-truncated corruption).
+    nonisolated static func isPlayable(_ url: URL) async -> Bool {
+        let asset = AVURLAsset(url: url)
+        do {
+            let playable = try await asset.load(.isPlayable)
+            let duration = try await asset.load(.duration)
+            return playable && !duration.seconds.isNaN && duration.seconds > 0
+        } catch {
+            return false
+        }
+    }
+
+    /// Ask the phone to re-send specific tracks (missing or corrupt on the Watch).
+    func requestRedownload(videoIds: [String]) {
+        guard !videoIds.isEmpty, WCSession.isSupported(),
+              WCSession.default.activationState == .activated else { return }
+        let msg: [String: Any] = [
+            WatchMessageKey.type.rawValue: WatchMessageType.requestRedownload.rawValue,
+            "videoIds": videoIds
+        ]
+        // transferUserInfo is queued + reliable even if the phone app isn't foreground
+        WCSession.default.transferUserInfo(msg)
     }
 
     // MARK: - Public

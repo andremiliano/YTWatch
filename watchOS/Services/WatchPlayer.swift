@@ -477,10 +477,14 @@ final class WatchPlayer: ObservableObject {
             return
         }
 
-        // Verify file is not empty/corrupt
+        // Verify file is not empty/truncated before handing it to AVPlayer.
+        // A truncated m4a is the main way a bad file can destabilize playback.
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
-        guard fileSize > 1000 else {
-            handleUnplayable(track: track, reason: "file corrupt")
+        guard fileSize > 20_000 else {
+            // Too small to be real audio — delete it and ask the phone to re-send.
+            WatchFileReceiver.shared.deleteCorruptAudioFile(videoId: track.videoId)
+            WatchFileReceiver.shared.requestRedownload(videoIds: [track.videoId])
+            handleUnplayable(track: track, reason: "file truncated (\(fileSize)b)")
             return
         }
 
@@ -602,10 +606,11 @@ final class WatchPlayer: ObservableObject {
                     let msg = errMsg ?? "Playback failed"
                     let failed = self.currentTrack
                     print("[Player] \u{2717} \(failed?.title ?? "?"): \(msg)")
-                    // The file is corrupt — delete it so it stops crashing playback and
-                    // gets re-synced from the phone on the next Verify & Re-sync.
+                    // The file is corrupt — delete it so it stops destabilizing playback
+                    // and ask the phone to re-send a clean copy.
                     if let vid = failed?.videoId, !vid.isEmpty {
                         WatchFileReceiver.shared.deleteCorruptAudioFile(videoId: vid)
+                        WatchFileReceiver.shared.requestRedownload(videoIds: [vid])
                     }
                     // Auto-skip on failure, bounded to avoid infinite loops on bad catalogs
                     self.handleUnplayable(track: failed ?? Track(id: "", videoId: "", title: "?", artist: "", durationSeconds: 0), reason: "load failed")
